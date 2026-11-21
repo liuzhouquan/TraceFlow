@@ -1,0 +1,22 @@
+[
+  {
+    "question": "用户会话过期后，客户端应该怎样恢复原来的请求？",
+    "expected_document": "01_账号与令牌故障排查.md",
+    "answer_keywords": ["刷新一次", "重试原请求一次", "重新登录"]
+  },
+  {
+    "question": "生产错误率达到什么条件必须回滚？",
+    "expected_document": "02_生产发布与回滚手册.md",
+    "answer_keywords": ["2%", "5 分钟", "回滚"]
+  },
+  {
+    "question": "去上海出差时，每晚住宿上限是多少？单张报销单总额不超过和超过 5000 元时，分别需要谁审批？",
+    "expected_document": "03_差旅与报销制度.md",
+    "answer_keywords": ["600 元", "5000 元", "直属主管"]
+  },
+  {
+    "question": "公司的 2028 年营收目标是多少？",
+    "expected_document": null,
+    "answer_keywords": ["无法确定"]
+  }
+]

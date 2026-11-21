@@ -1,0 +1,15 @@
+.env
+.pytest_cache/
+.test-tmp*/
+pytest-cache-files-*/
+__pycache__/
+*.py[cod]
+*.log
+.venv/
+.venv-*/
+.uv-cache/
+.uv-python/
+data/
+reports/
+uploads/
+volumes/

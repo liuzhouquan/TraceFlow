@@ -1,0 +1,45 @@
+[
+  {
+    "id": "auth-401-recovery",
+    "query": "业务请求收到 HTTP 401 后，客户端应该怎样恢复原请求？",
+    "relevant_documents": ["01_账号与令牌故障排查.md"]
+  },
+  {
+    "id": "auth-exact-error-code",
+    "query": "error_code 是 REFRESH_TOKEN_EXPIRED 时应该怎么处理？",
+    "relevant_documents": ["01_账号与令牌故障排查.md"]
+  },
+  {
+    "id": "release-error-rate",
+    "query": "核心接口错误率达到什么条件必须立即回滚？",
+    "relevant_documents": ["02_生产发布与回滚手册.md"]
+  },
+  {
+    "id": "release-window",
+    "query": "常规生产发布安排在每周哪几天、什么时间？",
+    "relevant_documents": ["02_生产发布与回滚手册.md"]
+  },
+  {
+    "id": "travel-hotel-approval",
+    "query": "上海住宿上限是多少，报销单超过 5000 元还要谁审批？",
+    "relevant_documents": ["03_差旅与报销制度.md"]
+  },
+  {
+    "id": "travel-meal",
+    "query": "出差餐补每天多少钱，已经提供工作餐时怎么办？",
+    "relevant_documents": ["03_差旅与报销制度.md"]
+  },
+  {
+    "id": "mobile-research-count",
+    "query": "移动端登录体验调研访谈了多少名用户？",
+    "relevant_documents": ["04_移动端登录体验调研.md"]
+  },
+  {
+    "id": "cross-document-login-release",
+    "query": "登录链路发布前要验证哪些路径，线上请求遇到 401 又应怎样恢复？",
+    "relevant_documents": [
+      "01_账号与令牌故障排查.md",
+      "02_生产发布与回滚手册.md"
+    ]
+  }
+]

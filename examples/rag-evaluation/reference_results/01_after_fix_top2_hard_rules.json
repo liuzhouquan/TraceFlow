@@ -1,0 +1,363 @@
+{
+  "run_id": "7c662006-89ea-4e30-8249-e2b849b031e8",
+  "status": "failed",
+  "created_at": "2026-08-09T21:00:43.225314+00:00",
+  "updated_at": "2026-08-09T21:01:40.450644+00:00",
+  "config": {
+    "run_judge": false,
+    "top_k": 2,
+    "mode": "hybrid"
+  },
+  "result": {
+    "status": "failed",
+    "passed": false,
+    "started_at": "2026-08-09T21:00:43.261649+00:00",
+    "completed_at": "2026-08-09T21:01:40.449632+00:00",
+    "evaluation_set": {
+      "name": "held_out_v1.jsonl",
+      "sha256": "38c1b06645b60f1e226aa790a9bdaf3fabd936612ee56927a8c4523cac5ae840",
+      "case_count": 9
+    },
+    "pipeline": {
+      "retrieval_mode": "hybrid",
+      "top_k": 2,
+      "alias": null,
+      "physical_collection": "rag_studio_production_v_devflow_ai_e8bd9518272c3696b9b2",
+      "generation_model": "deepseek-v4-flash",
+      "embedding_provider": "openai_compatible",
+      "embedding_model": "Qwen/Qwen3-Embedding-0.6B"
+    },
+    "judge": {
+      "requested": false,
+      "available": false,
+      "provider": "openai_compatible",
+      "model": null,
+      "ragas_version": null,
+      "prompt_version": null,
+      "input_language": null,
+      "error": null
+    },
+    "hard_gate": {
+      "passed": false,
+      "passed_cases": 8,
+      "total_cases": 9
+    },
+    "ragas_gate": {
+      "available": false,
+      "passed": null,
+      "metrics": {
+        "context_precision": {
+          "score": null,
+          "threshold": 0.8,
+          "passed": null,
+          "scored_cases": 0
+        },
+        "context_recall": {
+          "score": null,
+          "threshold": 0.85,
+          "passed": null,
+          "scored_cases": 0
+        },
+        "faithfulness": {
+          "score": null,
+          "threshold": 0.9,
+          "passed": null,
+          "scored_cases": 0
+        },
+        "answer_relevancy": {
+          "score": null,
+          "threshold": 0.75,
+          "passed": null,
+          "scored_cases": 0
+        }
+      },
+      "case_errors": 0
+    },
+    "cases": [
+      {
+        "id": "auth-401-recovery",
+        "kind": "positive",
+        "user_input": "业务请求收到 HTTP 401 后，客户端应该怎样恢复原请求？",
+        "reference": "暂停继续发送需要登录态的请求，只允许一次刷新 Access Token；刷新成功后只重试原请求一次。刷新接口或重试仍返回 401 时，清空登录态并引导用户重新登录。",
+        "response": "根据知识库[1]：客户端收到 HTTP 401 后，应暂停继续发送需要登录态的请求，使用 Refresh Token 刷新一次 Access Token，然后只重试原请求一次。刷新成功后，等待队列中的其他请求可以继续执行。若刷新接口本身返回 401，或原请求重试后仍返回 401，则必须清空本地登录态并引导用户重新登录，不能无限刷新和重试。",
+        "generation_mode": "llm",
+        "retrieved_contexts": [
+          "# 星河协作平台：账号与令牌故障排查\n## 收到 401 后如何恢复请求\n\n业务请求收到 HTTP 401 时，客户端应该暂停继续发送需要登录态的请求，使用 Refresh Token 刷新一次 Access Token，然后只重试原请求一次。刷新成功后，等待队列中的其他请求可以继续执行。刷新接口本身返回 401，或者原请求重试后仍然返回 401，都必须清空本地登录态并引导用户重新登录，不能无限刷新和重试。\n\n同一时刻有多个请求返回 401 时，只允许第一个请求发起刷新。其他请求进入等待队列，复用同一次刷新结果，避免并发刷新导致旧令牌覆盖新令牌。\n\nHTTP 403 表示当前账号已经通过身份校验，但没有访问目标资源的权限。客户端遇到 403 时不能刷新令牌，应展示权限不足，并记录资源名称和请求追踪 ID。",
+          "# 星河协作平台移动端登录体验调研\n## 设计建议\n\n登录页保留企业域名和最近账号，敏感凭证仍由系统安全存储管理。账号切换入口放到头像菜单的第一层。发生登录异常时，界面应展示可理解的错误提示和帮助入口。\n\n这些建议需要经过可用性测试后再进入排期。本调研没有规定客户端收到 HTTP 401、403 后应该刷新几次，也没有规定生产版本的发布窗口、回滚阈值或值班响应时间。相关工程规则应以认证故障手册和生产发布手册为准。"
+        ],
+        "retrieved_documents": [
+          "01_账号与令牌故障排查.md",
+          "04_移动端登录体验调研.md"
+        ],
+        "source_ids": [
+          "9e0a96e13c84593cedcb46fc",
+          "48dfdccea4180bcd1004eda0"
+        ],
+        "took_ms": 5741,
+        "hard_rules": {
+          "passed": true,
+          "document_recall": 1.0,
+          "mode_passed": true,
+          "missing_phrases": [],
+          "forbidden_phrases": [],
+          "missing_conflict_values": []
+        },
+        "ragas": null,
+        "ragas_error": null,
+        "ragas_skipped_reason": "judge_disabled"
+      },
+      {
+        "id": "auth-exact-error-code",
+        "kind": "positive",
+        "user_input": "error_code 是 REFRESH_TOKEN_EXPIRED 时应该怎么处理？",
+        "reference": "REFRESH_TOKEN_EXPIRED 必须引导用户重新登录，不能继续刷新令牌。",
+        "response": "根据证据[1]，`REFRESH_TOKEN_EXPIRED` 必须重新登录。",
+        "generation_mode": "llm",
+        "retrieved_contexts": [
+          "# 星河协作平台：账号与令牌故障排查\n## 人工排查步骤\n\n值班工程师先查看网关返回的 `error_code`。`TOKEN_EXPIRED` 通常进入一次刷新流程；`TOKEN_REVOKED`、`ACCOUNT_DISABLED` 和 `REFRESH_TOKEN_EXPIRED` 必须重新登录。用户重新登录仍然失败时，再核对设备时间、账号状态和认证服务健康度。\n\n排查过程中可以记录用户 ID 的脱敏值、请求追踪 ID 和错误码，但不能记录完整令牌。认证类 P1 故障要求值班工程师在 10 分钟内响应，并在 20 分钟内通知认证服务负责人。",
+          "# 星河协作平台：账号与令牌故障排查\n## 收到 401 后如何恢复请求\n\n业务请求收到 HTTP 401 时，客户端应该暂停继续发送需要登录态的请求，使用 Refresh Token 刷新一次 Access Token，然后只重试原请求一次。刷新成功后，等待队列中的其他请求可以继续执行。刷新接口本身返回 401，或者原请求重试后仍然返回 401，都必须清空本地登录态并引导用户重新登录，不能无限刷新和重试。\n\n同一时刻有多个请求返回 401 时，只允许第一个请求发起刷新。其他请求进入等待队列，复用同一次刷新结果，避免并发刷新导致旧令牌覆盖新令牌。\n\nHTTP 403 表示当前账号已经通过身份校验，但没有访问目标资源的权限。客户端遇到 403 时不能刷新令牌，应展示权限不足，并记录资源名称和请求追踪 ID。"
+        ],
+        "retrieved_documents": [
+          "01_账号与令牌故障排查.md",
+          "01_账号与令牌故障排查.md"
+        ],
+        "source_ids": [
+          "d93e39036590a9623b2dc326",
+          "9e0a96e13c84593cedcb46fc"
+        ],
+        "took_ms": 4830,
+        "hard_rules": {
+          "passed": true,
+          "document_recall": 1.0,
+          "mode_passed": true,
+          "missing_phrases": [],
+          "forbidden_phrases": [],
+          "missing_conflict_values": []
+        },
+        "ragas": null,
+        "ragas_error": null,
+        "ragas_skipped_reason": "judge_disabled"
+      },
+      {
+        "id": "release-error-rate",
+        "kind": "positive",
+        "user_input": "当前有效规则中，核心接口错误率达到什么条件必须立即回滚？",
+        "reference": "新版本观察期内，核心接口错误率超过 2% 并持续 5 分钟时必须立即回滚。",
+        "response": "当前有效规则中，核心接口错误率超过 2% 并持续 5 分钟，必须立即回滚。 [2]",
+        "generation_mode": "llm",
+        "retrieved_contexts": [
+          "# 已废弃的发布阈值备忘\n\n> 状态：已废弃。本文仅用于演示冲突证据检测，不能作为当前发布规则。\n\n旧版备忘曾规定：核心接口错误率超过 5% 并持续 10 分钟才执行回滚。该阈值已经被新版《生产发布与回滚手册》替代。\n\n当检索同时命中新旧规则时，系统必须报告冲突和来源状态，不能自行挑选一个数字回答。当前有效规则以《生产发布与回滚手册》为准。",
+          "# 星河协作平台：生产发布与回滚手册\n## 触发回滚的条件\n\n新版本上线后进入 30 分钟观察期。核心接口错误率超过 2% 并持续 5 分钟，必须立即回滚。P95 延迟相比发布前基线升高 50% 并持续 10 分钟，也必须回滚。出现数据损坏、越权访问或大面积登录失败时，不等待观察窗口，直接回滚并升级为生产事故。\n\n回滚由本次发布负责人执行，值班工程师负责盯住错误率、延迟和实例健康度。开始回滚后 10 分钟内，发布负责人要在研发协作群同步影响范围、回滚进度和下一次更新时间。服务恢复后 2 个工作日内完成复盘。"
+        ],
+        "retrieved_documents": [
+          "05_已废弃的发布阈值备忘.md",
+          "02_生产发布与回滚手册.md"
+        ],
+        "source_ids": [
+          "612ed2525dd7c434d02ec049",
+          "3157b245482663927754ab59"
+        ],
+        "took_ms": 5251,
+        "hard_rules": {
+          "passed": true,
+          "document_recall": 1.0,
+          "mode_passed": true,
+          "missing_phrases": [],
+          "forbidden_phrases": [],
+          "missing_conflict_values": []
+        },
+        "ragas": null,
+        "ragas_error": null,
+        "ragas_skipped_reason": "judge_disabled"
+      },
+      {
+        "id": "release-window",
+        "kind": "positive",
+        "user_input": "常规生产发布安排在每周哪几天、什么时间？",
+        "reference": "常规生产发布安排在每周二和周四 14:00 至 16:00。",
+        "response": "常规生产发布安排在每周二和周四 14:00 至 16:00。[1]",
+        "generation_mode": "llm",
+        "retrieved_contexts": [
+          "# 星河协作平台：生产发布与回滚手册\n## 发布窗口\n\n常规生产发布安排在每周二和周四 14:00 至 16:00。涉及数据库不可逆变更、认证链路或支付链路的发布，必须至少提前 1 个工作日登记变更单，并由服务负责人和当周值班工程师共同确认。紧急安全修复可以申请窗口外发布，但仍然需要变更单和回滚方案。",
+          "# 星河协作平台：生产发布与回滚手册\n## 触发回滚的条件\n\n新版本上线后进入 30 分钟观察期。核心接口错误率超过 2% 并持续 5 分钟，必须立即回滚。P95 延迟相比发布前基线升高 50% 并持续 10 分钟，也必须回滚。出现数据损坏、越权访问或大面积登录失败时，不等待观察窗口，直接回滚并升级为生产事故。\n\n回滚由本次发布负责人执行，值班工程师负责盯住错误率、延迟和实例健康度。开始回滚后 10 分钟内，发布负责人要在研发协作群同步影响范围、回滚进度和下一次更新时间。服务恢复后 2 个工作日内完成复盘。"
+        ],
+        "retrieved_documents": [
+          "02_生产发布与回滚手册.md",
+          "02_生产发布与回滚手册.md"
+        ],
+        "source_ids": [
+          "9ff66aade76275fb244e4c03",
+          "3157b245482663927754ab59"
+        ],
+        "took_ms": 4638,
+        "hard_rules": {
+          "passed": true,
+          "document_recall": 1.0,
+          "mode_passed": true,
+          "missing_phrases": [],
+          "forbidden_phrases": [],
+          "missing_conflict_values": []
+        },
+        "ragas": null,
+        "ragas_error": null,
+        "ragas_skipped_reason": "judge_disabled"
+      },
+      {
+        "id": "travel-hotel-approval",
+        "kind": "positive",
+        "user_input": "上海住宿上限是多少，报销单总额不超过和超过 5000 元时分别由谁审批？",
+        "reference": "上海普通岗位住宿每晚不超过 600 元；报销单总额不超过 5000 元时由直属主管审批，超过 5000 元时还需要部门负责人二次审批。",
+        "response": "上海住宿上限为每晚不超过 600 元 [2]。\n\n审批规则：单张报销单总额不超过 5000 元时，由直属主管审批；总额超过 5000 元时，还需要部门负责人二次审批 [1]。",
+        "generation_mode": "llm",
+        "retrieved_contexts": [
+          "# 星河科技差旅与报销制度\n## 提交时限与审批\n\n发票、行程单和付款凭证应在费用发生后 30 个自然日内上传到财务系统。单张报销单总额不超过 5000 元时，由直属主管审批；总额超过 5000 元时，还需要部门负责人二次审批。报销单包含超标准住宿、窗口外购票或缺少原始票据时，无论金额多少，都需要部门负责人说明。\n\n上海出差住宿如果每晚 580 元，且整张报销单总额为 4800 元，属于标准内费用，只需要直属主管审批。每晚 680 元即使报销总额低于 5000 元，也要先说明超标原因并取得部门负责人批准。",
+          "# 星河科技差旅与报销制度\n## 住宿标准\n\n员工前往北京、上海、广州、深圳出差，普通岗位住宿费用每晚不超过 600 元；前往其他城市，每晚不超过 450 元。住宿标准按实际入住晚数计算，不含早餐、洗衣和迷你吧消费。会议主办方指定酒店且价格超过标准时，需要在出发前取得部门负责人书面批准。\n\n同住一间客房的员工不能分别报销住宿费。因展会、极端天气等原因确实无法订到标准内酒店时，应保存比价截图，并在报销单中说明原因。"
+        ],
+        "retrieved_documents": [
+          "03_差旅与报销制度.md",
+          "03_差旅与报销制度.md"
+        ],
+        "source_ids": [
+          "5672d35cfd7a9a7022c3d10b",
+          "ff5f2c60570d7db9fc8698ef"
+        ],
+        "took_ms": 5839,
+        "hard_rules": {
+          "passed": true,
+          "document_recall": 1.0,
+          "mode_passed": true,
+          "missing_phrases": [],
+          "forbidden_phrases": [],
+          "missing_conflict_values": []
+        },
+        "ragas": null,
+        "ragas_error": null,
+        "ragas_skipped_reason": "judge_disabled"
+      },
+      {
+        "id": "mobile-research-count",
+        "kind": "positive",
+        "user_input": "移动端登录体验调研访谈了多少名用户？",
+        "reference": "产品团队在 2026 年第二季度访谈了 28 名移动端用户。",
+        "response": "根据当前知识库，调研访谈了 28 名移动端用户。[1]",
+        "generation_mode": "llm",
+        "retrieved_contexts": [
+          "# 星河协作平台移动端登录体验调研\n## 调研背景\n\n产品团队在 2026 年第二季度访谈了 28 名移动端用户，重点了解登录入口、账号切换和生物识别确认的使用感受。受访者经常提到“登录”“账号”“验证码”和“会话”等词，但本调研只记录体验反馈，不定义认证系统的令牌有效期或故障处理规则。",
+          "# 星河协作平台移动端登录体验调研\n## 主要反馈\n\n多数用户希望登录页能够记住最近使用的企业域名。拥有两个企业账号的用户认为账号切换入口太深，常常要先退出当前账号才能找到另一个账号。部分用户把“退出账号”和“关闭应用”理解为同一个动作，因此产品文案需要明确说明二者的区别。\n\n生物识别登录得到较高评价，但用户希望失败后可以直接切换到系统密码或短信验证码。验证码倒计时期间，重新发送按钮应保持禁用，同时展示剩余秒数。错误提示要说明下一步动作，不能只显示“登录失败”。"
+        ],
+        "retrieved_documents": [
+          "04_移动端登录体验调研.md",
+          "04_移动端登录体验调研.md"
+        ],
+        "source_ids": [
+          "3ce2321bc5d093b827b5b82a",
+          "383139c4105fb081af9be38d"
+        ],
+        "took_ms": 4612,
+        "hard_rules": {
+          "passed": true,
+          "document_recall": 1.0,
+          "mode_passed": true,
+          "missing_phrases": [],
+          "forbidden_phrases": [],
+          "missing_conflict_values": []
+        },
+        "ragas": null,
+        "ragas_error": null,
+        "ragas_skipped_reason": "judge_disabled"
+      },
+      {
+        "id": "cross-document-login-release",
+        "kind": "positive",
+        "user_input": "登录链路发布前要验证哪些路径，线上请求遇到 401 又应怎样恢复？",
+        "reference": "发布前要验证旧 Access Token、刷新后的 Access Token 和重新登录三条路径。线上请求收到 401 后只刷新一次 Access Token，并只重试原请求一次；仍失败时清空登录态并重新登录。",
+        "response": "- 发布前登录链路需验证旧 Access Token、刷新后的 Access Token 和重新登录三条路径。[2]  \n- 收到 401 后应暂停继续发送需要登录态的请求，使用 Refresh Token 刷新一次 Access Token，然后只重试原请求一次。[1]  \n- 刷新成功后，等待队列中的其他请求可以继续执行。[1]  \n- 刷新接口本身返回 401，或原请求重试后仍返回 401，必须清空本地登录态并引导用户重新登录，不能无限刷新和重试。[1]  \n- 同一时刻多个请求返回 401 时，只允许第一个请求发起刷新，其他请求进入等待队列，复用同一次刷新结果。[1]",
+        "generation_mode": "llm",
+        "retrieved_contexts": [
+          "# 星河协作平台：账号与令牌故障排查\n## 收到 401 后如何恢复请求\n\n业务请求收到 HTTP 401 时，客户端应该暂停继续发送需要登录态的请求，使用 Refresh Token 刷新一次 Access Token，然后只重试原请求一次。刷新成功后，等待队列中的其他请求可以继续执行。刷新接口本身返回 401，或者原请求重试后仍然返回 401，都必须清空本地登录态并引导用户重新登录，不能无限刷新和重试。\n\n同一时刻有多个请求返回 401 时，只允许第一个请求发起刷新。其他请求进入等待队列，复用同一次刷新结果，避免并发刷新导致旧令牌覆盖新令牌。\n\nHTTP 403 表示当前账号已经通过身份校验，但没有访问目标资源的权限。客户端遇到 403 时不能刷新令牌，应展示权限不足，并记录资源名称和请求追踪 ID。",
+          "# 星河协作平台：生产发布与回滚手册\n## 发布前检查\n\n发布负责人需要确认以下项目：持续集成流水线全部通过；灰度环境完成核心接口冒烟；数据库变更已经验证向前兼容；监控面板和告警规则可用；上一稳定版本镜像仍可拉取；回滚命令已经在预发布环境演练。缺少任何一项时，发布不得开始。\n\n涉及客户端登录链路的版本，还要验证旧 Access Token、刷新后的 Access Token 和重新登录三条路径。测试账号和令牌不能写进仓库，验证完成后应立即撤销临时凭证。"
+        ],
+        "retrieved_documents": [
+          "01_账号与令牌故障排查.md",
+          "02_生产发布与回滚手册.md"
+        ],
+        "source_ids": [
+          "9e0a96e13c84593cedcb46fc",
+          "3b7acfe3c647773629166edb"
+        ],
+        "took_ms": 15554,
+        "hard_rules": {
+          "passed": true,
+          "document_recall": 1.0,
+          "mode_passed": true,
+          "missing_phrases": [],
+          "forbidden_phrases": [],
+          "missing_conflict_values": []
+        },
+        "ragas": null,
+        "ragas_error": null,
+        "ragas_skipped_reason": "judge_disabled"
+      },
+      {
+        "id": "unknown-revenue-target",
+        "kind": "no_answer",
+        "user_input": "公司的 2028 年营收目标是多少？",
+        "reference": "当前知识库没有公司的 2028 年营收目标，系统应拒绝回答并说明缺少对应经营目标资料。",
+        "response": "根据当前知识库，我无法确定。请补充包含相关事实的资料后再试。",
+        "generation_mode": "no_evidence",
+        "retrieved_contexts": [],
+        "retrieved_documents": [],
+        "source_ids": [],
+        "took_ms": 2516,
+        "hard_rules": {
+          "passed": true,
+          "document_recall": 1.0,
+          "mode_passed": true,
+          "missing_phrases": [],
+          "forbidden_phrases": [],
+          "missing_conflict_values": []
+        },
+        "ragas": null,
+        "ragas_error": null,
+        "ragas_skipped_reason": "judge_disabled"
+      },
+      {
+        "id": "conflicting-rollback-threshold",
+        "kind": "conflict",
+        "user_input": "新旧发布资料中的核心接口错误率回滚阈值是否冲突？",
+        "reference": "两份资料存在冲突：现行手册规定错误率超过 2% 并持续 5 分钟立即回滚；已废弃备忘记录的是超过 5% 并持续 10 分钟。回答必须同时说明新旧状态，以现行手册为准。",
+        "response": "根据当前知识库，新旧资料中的核心接口错误率阈值确实存在冲突：  \n\n- 旧版（已废弃）规定：核心接口错误率超过 **5%** 并持续 **10 分钟**才执行回滚。[1]  \n- 新版《生产发布与回滚手册》规定：核心接口错误率回到 **0.5%** 以下，并连续稳定 **10 分钟**，才可以宣布回滚完成。[2]  \n\n此外，[1] 明确标注“已废弃”，并说明当前有效规则以《生产发布与回滚手册》为准。[1] 因此，两个数值（5% vs 0.5%）存在冲突，但旧规则不再生效。",
+        "generation_mode": "llm",
+        "retrieved_contexts": [
+          "# 已废弃的发布阈值备忘\n\n> 状态：已废弃。本文仅用于演示冲突证据检测，不能作为当前发布规则。\n\n旧版备忘曾规定：核心接口错误率超过 5% 并持续 10 分钟才执行回滚。该阈值已经被新版《生产发布与回滚手册》替代。\n\n当检索同时命中新旧规则时，系统必须报告冲突和来源状态，不能自行挑选一个数字回答。当前有效规则以《生产发布与回滚手册》为准。",
+          "# 星河协作平台：生产发布与回滚手册\n## 回滚完成标准\n\n上一稳定版本的实例全部健康，核心接口错误率回到 0.5% 以下，并连续稳定 10 分钟，才可以宣布回滚完成。仅仅看到部署命令执行成功，不代表服务已经恢复。"
+        ],
+        "retrieved_documents": [
+          "05_已废弃的发布阈值备忘.md",
+          "02_生产发布与回滚手册.md"
+        ],
+        "source_ids": [
+          "612ed2525dd7c434d02ec049",
+          "246e87b84db9bff96411fde6"
+        ],
+        "took_ms": 8206,
+        "hard_rules": {
+          "passed": false,
+          "document_recall": 1.0,
+          "mode_passed": true,
+          "missing_phrases": [
+            "2%"
+          ],
+          "forbidden_phrases": [],
+          "missing_conflict_values": [
+            "2%"
+          ]
+        },
+        "ragas": null,
+        "ragas_error": null,
+        "ragas_skipped_reason": "judge_disabled"
+      }
+    ]
+  },
+  "error": null
+}

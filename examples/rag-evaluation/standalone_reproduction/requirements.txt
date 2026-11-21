@@ -1,0 +1,17 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+httpx==0.28.1
+pydantic==2.10.4
+python-dotenv==1.0.1
+python-multipart==0.0.20
+pypdf==5.1.0
+python-docx==1.1.2
+pymilvus==2.6.16
+pytest==8.3.4
+pytest-asyncio==0.25.0
+ragas==0.4.3
+openai==2.53.0
+# Ragas 0.4.3 仍会导入这些兼容层；固定版本避免安装到 LangChain 1.x 后缺少旧模块。
+langchain==0.3.27
+langchain-community==0.3.31
+langchain-openai==0.3.35
