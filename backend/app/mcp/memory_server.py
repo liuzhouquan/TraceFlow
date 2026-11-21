@@ -41,7 +41,7 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "devflow_search_evidence",
         "description": (
-            "搜索 DevFlow 仓库知识和持久记忆。"
+            "搜索 TraceFlow 仓库知识和持久记忆。"
             "当需要回忆历史 Issue/PR、失败 CI、上传知识、项目文档、会话摘要、Agent 运行记录或已批准决策时，优先使用这个工具。"
             "当前代码、团队成员和实时状态应使用工作区或结构化工具。"
         ),
@@ -55,7 +55,7 @@ TOOLS: list[dict[str, Any]] = [
                     "description": "最大结果数",
                 },
                 "repo_id": {"type": "string", "description": "必填仓库 UUID。"},
-                "conversation_id": {"type": "string", "description": "可选 DevFlow 会话 UUID。"},
+                "conversation_id": {"type": "string", "description": "可选 TraceFlow 会话 UUID。"},
             },
             ["query", "repo_id"],
         ),
@@ -63,7 +63,7 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "devflow_get_thread_context",
         "description": (
-            "读取 DevFlow 仓库会话的完整原始聊天转录，可跨越 Compact Boundary。"
+            "读取 TraceFlow 仓库会话的完整原始聊天转录，可跨越 Compact Boundary。"
             "支持关键词、消息 UUID、前后范围和字符偏移分页；当用户询问之前说过什么或需要逐字核实时使用。"
         ),
         "inputSchema": _json_schema(
@@ -99,7 +99,7 @@ TOOLS: list[dict[str, Any]] = [
                     "description": "本次最多返回的正文字符数。",
                 },
                 "repo_id": {"type": "string", "description": "必填仓库 UUID。"},
-                "conversation_id": {"type": "string", "description": "可选 DevFlow 会话 UUID。"},
+                "conversation_id": {"type": "string", "description": "可选 TraceFlow 会话 UUID。"},
             },
             ["repo_id"],
         ),
@@ -107,7 +107,7 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "devflow_read_session_events",
         "description": (
-            "读取已封存的 DevFlow 聊天会话、摘要、原始消息和工具事件。"
+            "读取已封存的 TraceFlow 聊天会话、摘要、原始消息和工具事件。"
             "在 search_evidence 之后，或需要会话级回忆时使用。"
         ),
         "inputSchema": _json_schema(
@@ -133,7 +133,7 @@ TOOLS: list[dict[str, Any]] = [
                     "description": "本次最多返回的正文字符数。",
                 },
                 "repo_id": {"type": "string", "description": "必填仓库 UUID。"},
-                "conversation_id": {"type": "string", "description": "可选 DevFlow 会话 UUID。"},
+                "conversation_id": {"type": "string", "description": "可选 TraceFlow 会话 UUID。"},
             },
             ["repo_id"],
         ),

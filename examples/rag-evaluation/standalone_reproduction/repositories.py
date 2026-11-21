@@ -22,9 +22,9 @@ class Repository:
 
 REPOSITORIES = (
     Repository(
-        id="devflow-ai",
-        full_name="course/devflow-ai",
-        description="本课程要逐步实现的 DevFlow AI 项目知识库",
+        id="traceflow",
+        full_name="course/traceflow",
+        description="本示例要逐步实现的 TraceFlow 项目知识库",
     ),
     Repository(
         id="isolation-lab",
@@ -51,7 +51,7 @@ def settings_for_repository(settings: Settings, repo_id: str) -> Settings:
         settings,
         catalog_path=root / "catalog.sqlite3",
         upload_dir=upload_dir,
-        knowledge_base_name=f"DevFlow RAG 工程化 · {repo_id}",
+        knowledge_base_name=f"TraceFlow RAG 工程化 · {repo_id}",
         milvus_collection=f"{settings.milvus_collection}_{suffix}",
         milvus_collection_prefix=f"{settings.milvus_collection_prefix}_{suffix}",
     )

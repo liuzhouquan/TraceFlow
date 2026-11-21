@@ -14,7 +14,7 @@ DEFAULT_EMBEDDING_QUERY_INSTRUCTION = (
     "that answer the question"
 )
 
-# Pass the exact path so this standalone demo never walks up to DevFlow AI's root .env.
+# Pass the exact path so this standalone demo never walks up to TraceFlow's root .env.
 load_dotenv(BASE_DIR / ".env", override=False)
 
 

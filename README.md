@@ -23,7 +23,7 @@ docs/                    架构、API 与审查记录
 examples/rag-evaluation/  独立 RAG 实验与历史评估数据
 ```
 
-PostgreSQL 保存业务数据，Milvus 保存向量；etcd 和 MinIO 是 Milvus 依赖，Redis 可选。Compose 沿用带 pgvector 扩展的 PostgreSQL 镜像，但应用向量检索仍走 Milvus。历史数据库名与集合名中的 `devflow` 保留兼容性。
+PostgreSQL 保存业务数据，Milvus 保存向量；etcd 和 MinIO 是 Milvus 依赖，Redis 可选。Compose 沿用带 pgvector 扩展的 PostgreSQL 镜像，但应用向量检索仍走 Milvus。
 
 ## 启动
 

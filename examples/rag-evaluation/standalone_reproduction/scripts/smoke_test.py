@@ -122,9 +122,9 @@ def trace_is_valid(mode: str, payload: dict[str, Any]) -> bool:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Smoke-test DevFlow Production RAG Studio")
+    parser = argparse.ArgumentParser(description="Smoke-test TraceFlow Production RAG Studio")
     parser.add_argument("--base-url", default="http://127.0.0.1:8077")
-    parser.add_argument("--repo-id", default="devflow-ai")
+    parser.add_argument("--repo-id", default="traceflow")
     parser.add_argument("--ask", action="store_true", help="also verify grounded answers")
     parser.add_argument("--require-real-rerank", action="store_true")
     parser.add_argument("--allow-extra-documents", action="store_true")

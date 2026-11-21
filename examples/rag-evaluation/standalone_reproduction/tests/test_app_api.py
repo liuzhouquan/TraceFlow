@@ -22,13 +22,13 @@ def test_queries_keep_serving_while_a_candidate_generation_is_building(
             trace={"serving": {"physical_collection": "previous_generation"}},
         )
 
-    _store, pipeline, releases = app_module._runtime("devflow-ai")
+    _store, pipeline, releases = app_module._runtime("traceflow")
     monkeypatch.setattr(releases, "_build_lock", RunningBuild())
     monkeypatch.setattr(pipeline, "retrieve", fake_retrieve)
     client = TestClient(app_module.app)
 
     response = client.post(
-        "/api/repositories/devflow-ai/search",
+        "/api/repositories/traceflow/search",
         json={"query": "回滚条件", "mode": "hybrid"},
     )
 
@@ -46,13 +46,13 @@ def test_ask_keeps_serving_while_a_candidate_generation_is_building(
             "retrieval": {"serving": {"physical_collection": "previous_generation"}},
         }
 
-    _store, pipeline, releases = app_module._runtime("devflow-ai")
+    _store, pipeline, releases = app_module._runtime("traceflow")
     monkeypatch.setattr(releases, "_build_lock", RunningBuild())
     monkeypatch.setattr(pipeline, "ask", fake_ask)
     client = TestClient(app_module.app)
 
     response = client.post(
-        "/api/repositories/devflow-ai/ask",
+        "/api/repositories/traceflow/ask",
         json={"question": "回滚条件", "mode": "hybrid"},
     )
 

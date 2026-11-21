@@ -1,6 +1,6 @@
 # 7.5 RAG 评测独立复现实验
 
-这是产生课程 7.5 中五份合成资料、9 条固定 Case 和 Top-K=`2/3/4` 对比结果的独立实验工程。它来自课程早期版本中的 RAG 工程化示例，因此源码注释和默认知识库名称里仍可能出现旧章节号；这些历史文字不影响实验数据、运行逻辑和结果核对。
+这是产生示例 7.5 中五份合成资料、9 条固定 Case 和 Top-K=`2/3/4` 对比结果的独立实验工程。它来自示例早期版本中的 RAG 工程化示例，因此源码注释和默认知识库名称里仍可能出现旧章节号；这些历史文字不影响实验数据、运行逻辑和结果核对。
 
 > Milvus 是本项目唯一的向量与检索数据库。SQLite 只保存文档目录、期望状态、Generation、Job、Manifest 和事件等控制面数据，不保存向量，不执行 FTS、BM25 或任何检索降级。
 
@@ -128,7 +128,7 @@ macOS 或 Linux 使用 `python3 -m venv .venv`、`source .venv/bin/activate` 和
 
 ```powershell
 Invoke-RestMethod -Method Post `
-  http://127.0.0.1:8077/api/repositories/devflow-ai/seed
+  http://127.0.0.1:8077/api/repositories/traceflow/seed
 ```
 
 此时资料是 `staged`，Active Alias 尚未改变。提交构建任务：
@@ -140,7 +140,7 @@ $body = @{
 } | ConvertTo-Json
 
 $job = Invoke-RestMethod -Method Post `
-  -Uri http://127.0.0.1:8077/api/repositories/devflow-ai/releases/build `
+  -Uri http://127.0.0.1:8077/api/repositories/traceflow/releases/build `
   -ContentType "application/json" -Body $body
 $job
 ```
@@ -148,16 +148,16 @@ $job
 查询任务进度和事件：
 
 ```powershell
-Invoke-RestMethod http://127.0.0.1:8077/api/repositories/devflow-ai/jobs/$($job.id) |
+Invoke-RestMethod http://127.0.0.1:8077/api/repositories/traceflow/jobs/$($job.id) |
   ConvertTo-Json -Depth 12
 ```
 
 任务成功后查看 Generation、Active Alias 与门禁报告：
 
 ```powershell
-Invoke-RestMethod http://127.0.0.1:8077/api/repositories/devflow-ai/releases |
+Invoke-RestMethod http://127.0.0.1:8077/api/repositories/traceflow/releases |
   ConvertTo-Json -Depth 12
-Invoke-RestMethod http://127.0.0.1:8077/api/repositories/devflow-ai/status |
+Invoke-RestMethod http://127.0.0.1:8077/api/repositories/traceflow/status |
   ConvertTo-Json -Depth 12
 ```
 
@@ -169,21 +169,21 @@ Invoke-RestMethod http://127.0.0.1:8077/api/repositories/devflow-ai/status |
 
 ```powershell
 Invoke-RestMethod -Method Post `
-  http://127.0.0.1:8077/api/repositories/devflow-ai/releases/<generation_id>/promote
+  http://127.0.0.1:8077/api/repositories/traceflow/releases/<generation_id>/promote
 ```
 
 回滚到仍保留的旧 Generation：
 
 ```powershell
 Invoke-RestMethod -Method Post `
-  http://127.0.0.1:8077/api/repositories/devflow-ai/releases/<old_generation_id>/rollback
+  http://127.0.0.1:8077/api/repositories/traceflow/releases/<old_generation_id>/rollback
 ```
 
 对账 Active Alias、控制面 Manifest 与 Milvus 实际数据：
 
 ```powershell
 Invoke-RestMethod -Method Post `
-  http://127.0.0.1:8077/api/repositories/devflow-ai/reconcile |
+  http://127.0.0.1:8077/api/repositories/traceflow/reconcile |
   ConvertTo-Json -Depth 12
 ```
 
@@ -206,7 +206,7 @@ $body = @{
   mode = "hybrid"
 } | ConvertTo-Json
 
-Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8077/api/repositories/devflow-ai/investigate `
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8077/api/repositories/traceflow/investigate `
   -ContentType "application/json" -Body $body |
   ConvertTo-Json -Depth 15
 ```
@@ -236,24 +236,24 @@ RAGAS_FAITHFULNESS_MIN=0.90
 RAGAS_ANSWER_RELEVANCY_MIN=0.75
 ```
 
-这些是当前中文课程样本的试运行门槛，不是 Ragas 通用标准。完整报告要求四项分别达标、9 条硬规则全部通过且指标计算没有错误。没有启用 Judge 时只返回 `partial`，不会用假 0 分或假通过掩盖缺失检查。
+这些是当前中文样本的试运行门槛，不是 Ragas 通用标准。完整报告要求四项分别达标、9 条硬规则全部通过且指标计算没有错误。没有启用 Judge 时只返回 `partial`，不会用假 0 分或假通过掩盖缺失检查。
 
 运行：
 
 ```powershell
 # 硬规则冒烟
 python scripts\evaluate_ragas.py `
-  --repo-id devflow-ai `
+  --repo-id traceflow `
   --top-k 3 `
-  --json-output eval_results\ragas_course_top3_hard_rules.json
+  --json-output eval_results\ragas_traceflow_top3_hard_rules.json
 
 # 硬规则 + Ragas 0.4.3 四指标，并保存完整逐题报告
 python scripts\evaluate_ragas.py `
-  --repo-id devflow-ai `
+  --repo-id traceflow `
   --top-k 3 `
   --judge `
   --timeout 900 `
-  --json-output eval_results\ragas_course_top3_full.json
+  --json-output eval_results\ragas_traceflow_top3_full.json
 ```
 
 也可以在工作台「答案质量评测」区域点击「运行」。页面按「分数 / 门槛」显示 Context Precision、Context Recall、Faithfulness 和 Answer Relevancy，并显示硬规则通过数、Top-K、Judge、Ragas 版本与失败 Case。点击「明细」可查看每道题的回答、来源、硬规则和四项分数。
@@ -267,7 +267,7 @@ Run 状态含义：
 | `partial` | 只运行硬规则，不能当作完整 RAGAS 通过 |
 | `error` | Judge、Embedding、超时或结构化指标输出失败 |
 
-`eval_results/ragas_course_full_before_fix.json`、`ragas_course_full_after_fix.json` 与 `ragas_course_top3_full.json` 分别保存修复前失败、修复后仍有检索噪声、Top-K 3 最终通过的端到端现场。比较报告前先核对评测集 Hash、物理 Collection、Judge 和模型配置。
+`eval_results/ragas_traceflow_full_before_fix.json`、`ragas_traceflow_full_after_fix.json` 与 `ragas_traceflow_top3_full.json` 分别保存修复前失败、修复后仍有检索噪声、Top-K 3 最终通过的端到端现场。比较报告前先核对评测集 Hash、物理 Collection、Judge 和模型配置。
 
 ## 验证
 
@@ -311,19 +311,19 @@ python scripts\evaluate_retrieval.py --repo-id isolation-lab
 | `scripts/evaluate_ragas.py` | 创建评测 Run、轮询结果、打印阈值并输出 CI 退出码 |
 | `eval_results/` | 真实校准与端到端评测报告；不存 API Key |
 
-## 与 DevFlow AI 主项目的关系
+## 与 TraceFlow 主应用的关系
 
-这套 RAG 工程化工作室是一条可以独立运行和验证的目标架构，不是主项目当前源码的逐行复制。两边都使用 `Repository / repo_id` 隔离仓库数据，以 Milvus 作为唯一向量数据库，并把文档处理、检索、引用和索引重建放在同一条主线上。
+这套 RAG 工程化工作室是一个可以独立运行和验证的示例架构。它使用 `Repository / repo_id` 隔离仓库数据，以 Milvus 作为唯一向量数据库，并把文档处理、检索、引用和索引重建放在同一条主线上。
 
 为了让工作室可以独立运行，当前实现明确控制了能力范围：
 
-- `repositories.py` 使用预置逻辑仓库，主项目使用 GitHub 同步后写入数据库的真实 Repository UUID；
-- 工作室使用每仓库独立 SQLite 控制面，主项目需要把 Generation、Job、Manifest 和事件迁入统一关系数据库；
-- 工作室的 Build Job 在 FastAPI 进程内执行，主项目还需要正式任务队列、分布式锁、重试和监控；
-- RAG 工程化工作室已实现 Milvus BM25 + RRF、Generation、质量门禁、Alias、回滚和对账，主项目尚未完整接入这些能力；
-- 工作室没有复制主项目的用户权限、GitHub 同步、Chat Agent、MCP 和会话记忆体系。
+- `repositories.py` 使用预置逻辑仓库，TraceFlow 主应用使用 GitHub 同步后写入数据库的 Repository UUID；
+- 工作室使用每仓库独立 SQLite 控制面，集成时需要把 Generation、Job、Manifest 和事件迁入统一关系数据库；
+- 工作室的 Build Job 在 FastAPI 进程内执行，集成时还需要正式任务队列、分布式锁、重试和监控；
+- RAG 工程化工作室已实现 Milvus BM25 + RRF、Generation、质量门禁、Alias、回滚和对账，这些能力需要与主应用进一步集成；
+- 工作室没有复制主应用的用户权限、GitHub 同步、Chat Agent、MCP 和会话记忆体系。
 
-把 RAG 工程化工作室接入主项目时，核心算法和发布约束可以保留，主要工作是替换 Repository 来源、迁移控制面模型、统一检索实现、接入任务系统，并补齐权限、审计、告警和持续评测。完成这条工程链路，意味着已经实现 DevFlow AI RAG 的核心架构；把它变成正式产品能力，还需要完成这些外围集成。
+把 RAG 工程化工作室接入主应用时，核心算法和发布约束可以保留，主要工作是替换 Repository 来源、迁移控制面模型、统一检索实现、接入任务系统，并补齐权限、审计、告警和持续评测。完成这条工程链路，意味着可以构成 TraceFlow RAG 功能的工程基础；把它变成正式产品能力，还需要完成这些外围集成。
 
 ## 当前工程限制
 

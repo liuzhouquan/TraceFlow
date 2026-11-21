@@ -1615,7 +1615,7 @@ class RAGStore:
     def __init__(
         self,
         settings: Settings,
-        repo_id: str = "devflow-ai",
+        repo_id: str = "traceflow",
         *,
         vector_store: MilvusVectorStore | Any | None = None,
         snapshot_mode: bool = False,

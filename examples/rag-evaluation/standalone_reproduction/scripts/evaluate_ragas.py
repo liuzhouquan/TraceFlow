@@ -76,10 +76,10 @@ def render(payload: dict[str, Any]) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Run DevFlow RAG Studio generation quality evaluation"
+        description="Run TraceFlow RAG Studio generation quality evaluation"
     )
     parser.add_argument("--base-url", default="http://127.0.0.1:8077")
-    parser.add_argument("--repo-id", default="devflow-ai")
+    parser.add_argument("--repo-id", default="traceflow")
     parser.add_argument("--top-k", type=int, default=4)
     parser.add_argument(
         "--mode",

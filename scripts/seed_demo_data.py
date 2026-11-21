@@ -19,7 +19,7 @@ def main() -> None:
                 owner="course-demo",
                 name="devflow-sample-api",
                 full_name="course-demo/devflow-sample-api",
-                description="Demo repository for DevFlow AI course",
+                description="Demo repository for TraceFlow course",
                 default_branch="main",
                 github_id=10001,
             )
