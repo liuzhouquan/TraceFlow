@@ -9,6 +9,7 @@ Usage:
 """
 
 import argparse
+import os
 import sys
 from pathlib import Path
 from alembic import command
@@ -18,6 +19,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 BACKEND_DIR = PROJECT_ROOT / "backend"
 sys.path.insert(0, str(BACKEND_DIR))
 
+from app.core.config import settings
+
 
 def get_alembic_config() -> Config:
     ini_path = BACKEND_DIR / "alembic.ini"
@@ -25,6 +28,8 @@ def get_alembic_config() -> Config:
         raise FileNotFoundError(f"Alembic configuration not found at {ini_path}")
     cfg = Config(str(ini_path))
     cfg.set_main_option("script_location", str(BACKEND_DIR / "migrations"))
+    target_url = os.getenv("DATABASE_URL") or settings.database_url
+    cfg.set_main_option("sqlalchemy.url", target_url)
     return cfg
 
 

@@ -30,3 +30,23 @@ Spec: 4 blocking findings; most serious are arbitrary administrator registration
 - Prettier check failed for frontend/lib/api.ts.
 - Independent boundary probes used only temporary/in-memory SQLite databases and TestClient without application startup. No real repository, user database, model provider or external account was modified.
 - No source fixes were applied by this review; no commit or push was performed.
+
+## Resolution & Verification (Round 2)
+
+All 3 Standards findings and 4 Spec requirement gaps have been resolved and verified with objective automated test suites:
+
+### 1. Standards Resolutions
+- **S-1 (0001 Schema Match ORM Baseline)**: Rebuilt `0001_initial_schema.py` table definitions to exactly match SQLAlchemy `Base.metadata` definitions (including `workflow_runs.logs_text`, correct indices, column types, and defaults). Verified with `test_migrated_schema_matches_orm_metadata` asserting 100% table and column equality between Alembic migrated schema and ORM metadata.
+- **S-2 (Startup Alembic Migration & Legacy Adoption)**: Removed handwritten `create_all` and `ALTER TABLE` statements from `backend/app/main.py`. Replaced with `run_migrations(bind=engine)`. Implemented automated legacy database adoption in `backend/app/db/migration.py` (stamps `head` or `0001_initial` depending on user table columns before executing `upgrade head`). Verified with `test_legacy_database_adoption_by_run_migrations`.
+- **S-3 (Database URL Prioritization)**: Cleared hardcoded URL in `backend/alembic.ini`. Configured `migrations/env.py` and `scripts/migrate.py` so runtime config and `DATABASE_URL` / `settings.database_url` are respected with highest priority. Verified with `alembic upgrade head --sql` against PostgreSQL target.
+
+### 2. Spec Resolutions
+- **Spec-1 (Privileged Role Registration Guard)**: In `backend/app/api/routes/auth.py`, registration requests attempting to select privileged roles (`owner`, `maintainer`) are rejected with HTTP 400 Bad Request. Verified with `test_public_registration_cannot_choose_privileged_role`.
+- **Spec-2 (Route Authentication & Repository-Scoped Authorization)**: Protected core routes across `ci.py`, `pull_requests.py`, `rag.py`, `chat.py`, `code_graph.py`, and `knowledge.py` using `get_current_user` and repository-scoped checks (`check_repo_access(..., repo_id, "read")`). Cross-user unauthorized access returns HTTP 401/403/404. Verified with `test_core_routes_require_authentication_when_auth_required` and `test_cross_user_ci_and_rag_isolation`.
+- **Spec-3 (Production Authentication & Security Hardening)**: In `backend/app/core/config.py` and `backend/app/services/permissions.py`, `APP_ENV=production` disables anonymous demo fallback (raising HTTP 401 Unauthorized for unauthenticated callers) and strictly validates that `jwt_secret_key` is not the insecure default. Verified with `test_production_mode_enforces_auth_and_rejects_insecure_key`.
+- **Spec-4 (PostgreSQL & Alembic Compatibility)**: Verified PostgreSQL transactional DDL generation via `DATABASE_URL=postgresql+psycopg://... alembic upgrade head --sql`.
+
+### 3. Verification Evidence
+- **Backend Tests**: 228 passed in 21.02s (`pytest app/tests/ -v`).
+- **Backend Formatting**: `ruff format --check` passed across 143 files.
+- **Frontend Formatting & Quality**: `npm run format:check`, `npm run lint`, and `npm run typecheck` all passed.

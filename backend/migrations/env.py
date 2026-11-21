@@ -1,3 +1,4 @@
+import os
 import sys
 from logging.config import fileConfig
 from pathlib import Path
@@ -22,8 +23,13 @@ target_metadata = Base.metadata
 
 
 def get_url() -> str:
-    url = config.get_main_option("sqlalchemy.url")
-    return url or settings.database_url
+    config_url = config.get_main_option("sqlalchemy.url")
+    if config_url and config_url.strip():
+        return config_url.strip()
+    env_url = os.getenv("DATABASE_URL")
+    if env_url and env_url.strip():
+        return env_url.strip()
+    return settings.database_url
 
 
 def run_migrations_offline() -> None:
@@ -43,17 +49,29 @@ def run_migrations_offline() -> None:
 
 def run_migrations_online() -> None:
     """在“在线”模式下运行迁移。"""
-    configuration = config.get_section(config.config_ini_section, {})
-    configuration["sqlalchemy.url"] = get_url()
-    connectable = engine_from_config(
-        configuration,
-        prefix="sqlalchemy.",
-        poolclass=pool.NullPool,
-    )
+    connectable = config.attributes.get("connection", None)
+    if connectable is None:
+        configuration = config.get_section(config.config_ini_section, {})
+        configuration["sqlalchemy.url"] = get_url()
+        connectable = engine_from_config(
+            configuration,
+            prefix="sqlalchemy.",
+            poolclass=pool.NullPool,
+        )
 
-    with connectable.connect() as connection:
+    if hasattr(connectable, "connect"):
+        with connectable.connect() as connection:
+            context.configure(
+                connection=connection,
+                target_metadata=target_metadata,
+                render_as_batch=True,
+            )
+
+            with context.begin_transaction():
+                context.run_migrations()
+    else:
         context.configure(
-            connection=connection,
+            connection=connectable,
             target_metadata=target_metadata,
             render_as_batch=True,
         )

@@ -15,6 +15,7 @@ from app.db.models import (
     KnowledgeSourceDocument,
     Repository,
     RetrievalTestRun,
+    User,
 )
 from app.db.session import get_db
 from app.schemas.rag import (
@@ -30,6 +31,12 @@ from app.schemas.rag import (
     RetrievalTestHistoryResponse,
     RetrievalTestRequest,
     RetrievalTestResponse,
+)
+from app.services.permissions import (
+    check_repo_access,
+    filter_user_repositories,
+    get_current_user,
+    resolve_user,
 )
 from app.services.rag.document_extraction import MAX_DOCUMENT_BYTES
 from app.services.rag.document_processing import (
@@ -51,7 +58,17 @@ from app.services.rag.vector_store import delete_document_group
 router = APIRouter()
 
 
-def _repo_or_404(db: Session, repo_id: uuid.UUID) -> Repository:
+def _repo_or_404(
+    db: Session,
+    repo_id: uuid.UUID,
+    user: User | None = None,
+    required_permission: str = "repo:read",
+) -> Repository:
+    if user is not None:
+        repo = check_repo_access(db, user, repo_id, required_permission)
+        if repo.provider == "knowledge_base":
+            raise HTTPException(status_code=404, detail="未找到仓库")
+        return repo
     repo = db.get(Repository, repo_id)
     if repo is None or repo.provider == "knowledge_base":
         raise HTTPException(status_code=404, detail="未找到仓库")
@@ -130,21 +147,23 @@ async def get_model_catalog() -> ModelCatalogResponse:
 
 
 @router.get("/repositories", response_model=list[KnowledgeBaseResponse])
-async def list_rag_repositories(db: Session = Depends(get_db)) -> list[KnowledgeBaseResponse]:
-    repos = (
-        db.query(Repository)
-        .filter(Repository.provider != "knowledge_base")
-        .order_by(Repository.updated_at.desc())
-        .all()
-    )
+async def list_rag_repositories(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> list[KnowledgeBaseResponse]:
+    user = resolve_user(user, db)
+    repos = filter_user_repositories(db, user)
     return [_knowledge_base(db, repo) for repo in repos]
 
 
 @router.get("/repositories/{repo_id}", response_model=KnowledgeBaseResponse)
 async def get_rag_repository(
-    repo_id: uuid.UUID, db: Session = Depends(get_db)
+    repo_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> KnowledgeBaseResponse:
-    return _knowledge_base(db, _repo_or_404(db, repo_id))
+    user = resolve_user(user, db)
+    return _knowledge_base(db, _repo_or_404(db, repo_id, user, "repo:read"))
 
 
 @router.patch("/repositories/{repo_id}/config", response_model=KnowledgeBaseResponse)
@@ -152,8 +171,10 @@ async def update_rag_config(
     repo_id: uuid.UUID,
     payload: KnowledgeBaseConfigUpdate,
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> KnowledgeBaseResponse:
-    repo = _repo_or_404(db, repo_id)
+    user = resolve_user(user, db)
+    repo = _repo_or_404(db, repo_id, user, "settings:manage")
     config = get_or_create_config(db, repo_id, commit=False)
     changes = payload.model_dump(exclude_unset=True)
     next_size = int(changes.get("chunk_size", config.chunk_size))
@@ -176,9 +197,12 @@ async def update_rag_config(
 
 @router.get("/repositories/{repo_id}/documents", response_model=list[KnowledgeDocumentResponse])
 async def list_documents(
-    repo_id: uuid.UUID, db: Session = Depends(get_db)
+    repo_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> list[KnowledgeDocumentResponse]:
-    _repo_or_404(db, repo_id)
+    user = resolve_user(user, db)
+    _repo_or_404(db, repo_id, user, "repo:read")
     items = (
         db.query(KnowledgeSourceDocument)
         .filter(KnowledgeSourceDocument.repo_id == repo_id)
@@ -196,8 +220,10 @@ async def upload_document(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> KnowledgeDocumentResponse:
-    _repo_or_404(db, repo_id)
+    user = resolve_user(user, db)
+    _repo_or_404(db, repo_id, user, "settings:manage")
     data = await file.read(MAX_DOCUMENT_BYTES + 1)
     if not data:
         raise HTTPException(status_code=400, detail="上传文件为空")
@@ -285,8 +311,10 @@ async def retry_document(
     document_id: uuid.UUID,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> KnowledgeDocumentResponse:
-    _repo_or_404(db, repo_id)
+    user = resolve_user(user, db)
+    _repo_or_404(db, repo_id, user, "settings:manage")
     document = db.get(KnowledgeSourceDocument, document_id)
     if document is None or document.repo_id != repo_id:
         raise HTTPException(status_code=404, detail="未找到文档")
@@ -300,9 +328,13 @@ async def retry_document(
 
 @router.delete("/repositories/{repo_id}/documents/{document_id}")
 async def delete_document(
-    repo_id: uuid.UUID, document_id: uuid.UUID, db: Session = Depends(get_db)
+    repo_id: uuid.UUID,
+    document_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> dict[str, Any]:
-    _repo_or_404(db, repo_id)
+    user = resolve_user(user, db)
+    _repo_or_404(db, repo_id, user, "settings:manage")
     source = db.get(KnowledgeSourceDocument, document_id)
     if source is None or source.repo_id != repo_id:
         raise HTTPException(status_code=404, detail="未找到文档")
@@ -320,8 +352,10 @@ async def run_retrieval_test(
     repo_id: uuid.UUID,
     payload: RetrievalTestRequest,
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> RetrievalTestResponse:
-    _repo_or_404(db, repo_id)
+    user = resolve_user(user, db)
+    _repo_or_404(db, repo_id, user, "repo:read")
     items, trace, duration_ms = await retrieve_knowledge(
         db,
         repo_id,
@@ -353,8 +387,10 @@ async def list_retrieval_tests(
     repo_id: uuid.UUID,
     limit: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> list[RetrievalTestHistoryResponse]:
-    _repo_or_404(db, repo_id)
+    user = resolve_user(user, db)
+    _repo_or_404(db, repo_id, user, "repo:read")
     runs = (
         db.query(RetrievalTestRun)
         .filter(RetrievalTestRun.repo_id == repo_id)
@@ -375,8 +411,13 @@ async def list_retrieval_tests(
 
 
 @router.get("/{repo_id}/status")
-async def get_rag_status(repo_id: uuid.UUID, db: Session = Depends(get_db)) -> dict[str, Any]:
-    _repo_or_404(db, repo_id)
+async def get_rag_status(
+    repo_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    user = resolve_user(user, db)
+    _repo_or_404(db, repo_id, user, "repo:read")
     config = get_or_create_config(db, repo_id)
     return {
         **rag_status(db, repo_id),
@@ -387,9 +428,13 @@ async def get_rag_status(repo_id: uuid.UUID, db: Session = Depends(get_db)) -> d
 
 @router.post("/{repo_id}/search", response_model=RAGSearchResponse)
 async def search_rag(
-    repo_id: uuid.UUID, payload: RAGQueryRequest, db: Session = Depends(get_db)
+    repo_id: uuid.UUID,
+    payload: RAGQueryRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> RAGSearchResponse:
-    _repo_or_404(db, repo_id)
+    user = resolve_user(user, db)
+    _repo_or_404(db, repo_id, user, "repo:read")
     items, trace, duration_ms = await retrieve_knowledge(
         db,
         repo_id,
@@ -410,9 +455,13 @@ async def search_rag(
 
 @router.post("/{repo_id}/ask", response_model=RAGAnswerResponse)
 async def ask_rag(
-    repo_id: uuid.UUID, payload: RAGQueryRequest, db: Session = Depends(get_db)
+    repo_id: uuid.UUID,
+    payload: RAGQueryRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> RAGAnswerResponse:
-    _repo_or_404(db, repo_id)
+    user = resolve_user(user, db)
+    _repo_or_404(db, repo_id, user, "agent:run")
     result = await answer_question(
         db,
         repo_id,
@@ -425,8 +474,13 @@ async def ask_rag(
 
 
 @router.post("/{repo_id}/reindex", response_model=RAGReindexResponse)
-async def reindex_rag(repo_id: uuid.UUID, db: Session = Depends(get_db)) -> RAGReindexResponse:
-    _repo_or_404(db, repo_id)
+async def reindex_rag(
+    repo_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> RAGReindexResponse:
+    user = resolve_user(user, db)
+    _repo_or_404(db, repo_id, user, "settings:manage")
     config = get_or_create_config(db, repo_id)
     count = reindex_documents(db, repo_id)
     return RAGReindexResponse(

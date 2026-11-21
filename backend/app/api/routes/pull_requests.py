@@ -16,6 +16,7 @@ from app.db.models import (
     Document,
     PullRequest,
     Repository,
+    User,
     WorkflowRun,
 )
 from app.db.session import get_db
@@ -23,6 +24,7 @@ from app.schemas.pull_requests import PRAnalysisResponse, PullRequestResponse
 from app.services.agents.pr_review_agent import PRReviewAgent
 from app.services.chat_memory import ContextAssembler
 from app.services.code_search import search_repository_code
+from app.services.permissions import check_repo_access, get_current_user, resolve_user
 from app.services.rag.retrieval import search_similar_documents
 from app.services.worktree_manager import cleanup_pr_snapshots, prepare_pr_worktree
 
@@ -578,7 +580,13 @@ async def _pr_analysis_sse(
 
 
 @router.get("/repos/{repo_id}/pull-requests", response_model=list[PullRequestResponse])
-async def list_pull_requests(repo_id: UUID, db: Session = Depends(get_db)) -> list[PullRequest]:
+async def list_pull_requests(
+    repo_id: UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> list[PullRequest]:
+    user = resolve_user(user, db)
+    check_repo_access(db, user, repo_id, "repo:read")
     return (
         db.query(PullRequest)
         .options(selectinload(PullRequest.files), selectinload(PullRequest.review_comments))
@@ -589,7 +597,12 @@ async def list_pull_requests(repo_id: UUID, db: Session = Depends(get_db)) -> li
 
 
 @router.get("/pull-requests/{pr_id}", response_model=PullRequestResponse)
-async def get_pull_request(pr_id: UUID, db: Session = Depends(get_db)) -> PullRequest:
+async def get_pull_request(
+    pr_id: UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> PullRequest:
+    user = resolve_user(user, db)
     pr = (
         db.query(PullRequest)
         .options(selectinload(PullRequest.files), selectinload(PullRequest.review_comments))
@@ -598,6 +611,7 @@ async def get_pull_request(pr_id: UUID, db: Session = Depends(get_db)) -> PullRe
     )
     if pr is None:
         raise HTTPException(status_code=404, detail="未找到 PR")
+    check_repo_access(db, user, pr.repo_id, "repo:read")
     return pr
 
 
@@ -608,7 +622,9 @@ async def analyze_pull_request(
     use_pr_snapshot: bool = Query(default=True),
     use_worktree: bool | None = Query(default=None),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> PRAnalysisResponse:
+    user = resolve_user(user, db)
     pr = (
         db.query(PullRequest)
         .options(selectinload(PullRequest.files), selectinload(PullRequest.review_comments))
@@ -617,6 +633,7 @@ async def analyze_pull_request(
     )
     if pr is None:
         raise HTTPException(status_code=404, detail="未找到 PR")
+    check_repo_access(db, user, pr.repo_id, "agent:run")
     agent = PRReviewAgent()
     snapshot_enabled = use_pr_snapshot if use_worktree is None else use_worktree
     snapshot = _prepare_pr_snapshot_context(db, pr, snapshot_enabled)
@@ -632,14 +649,25 @@ async def analyze_pull_request_stream(
     pr_id: UUID,
     conversation_id: UUID | None = Query(default=None),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> StreamingResponse:
+    user = resolve_user(user, db)
+    pr = db.get(PullRequest, pr_id)
+    if pr is None:
+        raise HTTPException(status_code=404, detail="未找到 PR")
+    check_repo_access(db, user, pr.repo_id, "agent:run")
     return StreamingResponse(
         _pr_analysis_sse(pr_id, conversation_id, db), media_type="text/event-stream"
     )
 
 
 @router.post("/pull-requests/{pr_id}/snapshot")
-async def prepare_pull_request_snapshot(pr_id: UUID, db: Session = Depends(get_db)) -> dict:
+async def prepare_pull_request_snapshot(
+    pr_id: UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    user = resolve_user(user, db)
     pr = (
         db.query(PullRequest)
         .options(selectinload(PullRequest.files))
@@ -648,11 +676,17 @@ async def prepare_pull_request_snapshot(pr_id: UUID, db: Session = Depends(get_d
     )
     if pr is None:
         raise HTTPException(status_code=404, detail="未找到 PR")
+    check_repo_access(db, user, pr.repo_id, "repo:read")
     return _prepare_pr_snapshot_context(db, pr, enabled=True)
 
 
 @router.post("/pull-requests/{pr_id}/worktree")
-async def prepare_pull_request_worktree(pr_id: UUID, db: Session = Depends(get_db)) -> dict:
+async def prepare_pull_request_worktree(
+    pr_id: UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    user = resolve_user(user, db)
     pr = (
         db.query(PullRequest)
         .options(selectinload(PullRequest.files))
@@ -661,6 +695,7 @@ async def prepare_pull_request_worktree(pr_id: UUID, db: Session = Depends(get_d
     )
     if pr is None:
         raise HTTPException(status_code=404, detail="未找到 PR")
+    check_repo_access(db, user, pr.repo_id, "repo:read")
     return _prepare_pr_snapshot_context(db, pr, enabled=True)
 
 
@@ -669,14 +704,23 @@ async def cleanup_pull_request_snapshots(
     repo_id: UUID,
     max_age_hours: int = Query(default=168, ge=1, le=24 * 90),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> dict:
-    repo = db.get(Repository, repo_id)
-    if repo is None:
-        raise HTTPException(status_code=404, detail="未找到仓库")
+    user = resolve_user(user, db)
+    repo = check_repo_access(db, user, repo_id, "settings:manage")
     return cleanup_pr_snapshots(db, repo, max_age_hours=max_age_hours)
 
 
 @router.post("/pull-requests/{pr_id}/review-checklist")
-async def review_checklist(pr_id: UUID, db: Session = Depends(get_db)) -> dict:
-    response = await analyze_pull_request(pr_id, db=db)
+async def review_checklist(
+    pr_id: UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    user = resolve_user(user, db)
+    pr = db.get(PullRequest, pr_id)
+    if pr is None:
+        raise HTTPException(status_code=404, detail="未找到 PR")
+    check_repo_access(db, user, pr.repo_id, "agent:run")
+    response = await analyze_pull_request(pr_id, db=db, user=user)
     return {"pr_id": str(pr_id), "checklist": response.result.review_checklist}

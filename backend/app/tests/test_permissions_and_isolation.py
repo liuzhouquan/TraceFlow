@@ -37,7 +37,13 @@ def perm_db_session(tmp_path):
 
 
 @pytest.fixture
-def perm_client(perm_db_session):
+def perm_client(perm_db_session, monkeypatch):
+    import app.main as main_mod
+    import app.db.session as sess_mod
+
+    test_engine = perm_db_session.get_bind()
+    monkeypatch.setattr(main_mod, "engine", test_engine)
+    monkeypatch.setattr(sess_mod, "SessionLocal", sessionmaker(bind=test_engine))
     app = create_app()
 
     def override_get_db():
@@ -303,3 +309,142 @@ def test_repository_issues_and_conversations_isolation(perm_client, perm_db_sess
         json={"repo_id": str(repo.id), "title": "Bob eavesdropping"},
     )
     assert conv_resp_bob.status_code in (403, 404)
+
+
+def test_core_routes_require_authentication_when_auth_required(
+    perm_client, perm_db_session, monkeypatch
+):
+    from app.core.config import settings
+    from app.db.models import WorkflowRun, Document
+
+    monkeypatch.setattr(settings, "auth_required", True)
+
+    repo = Repository(
+        owner="isolated-org",
+        name="isolated-repo",
+        full_name="isolated-org/isolated-repo",
+        is_public=False,
+    )
+    perm_db_session.add(repo)
+    perm_db_session.commit()
+
+    run = WorkflowRun(
+        repo_id=repo.id,
+        github_run_id=5001,
+        name="private-ci",
+        status="completed",
+        conclusion="failure",
+        created_at=datetime.now(timezone.utc),
+    )
+    doc = Document(
+        repo_id=repo.id,
+        source_type="project_doc",
+        source_id=uuid4(),
+        title="Secret Spec",
+        content="Sensitive internals",
+        metadata={"title": "Secret Spec"},
+    )
+    perm_db_session.add_all([run, doc])
+    perm_db_session.commit()
+
+    # 未携带 Authorization Header 请求核心路由，必须统一返回 401 Unauthorized
+    endpoints = [
+        f"/api/repos/{repo.id}/workflow-runs",
+        f"/api/workflow-runs/{run.id}",
+        f"/api/workflow-runs/{run.id}/failed-jobs",
+        f"/api/repos/{repo.id}/pull-requests",
+        f"/api/repos/{repo.id}/code-symbols",
+        f"/api/repos/{repo.id}/knowledge",
+        f"/api/rag/repositories/{repo.id}",
+        f"/api/chat/history?repo_id={repo.id}",
+    ]
+    for endpoint in endpoints:
+        resp = perm_client.get(endpoint)
+        assert resp.status_code == 401, f"{endpoint} expected 401, got {resp.status_code}"
+
+
+def test_cross_user_ci_and_rag_isolation(perm_client, perm_db_session):
+    from app.db.models import WorkflowRun, Document
+
+    user_alice = User(
+        name="alice_ci",
+        email="alice_ci@example.com",
+        role="developer",
+        hashed_password=hash_password("Pass123!"),
+    )
+    user_bob = User(
+        name="bob_ci",
+        email="bob_ci@example.com",
+        role="developer",
+        hashed_password=hash_password("Pass123!"),
+    )
+    perm_db_session.add_all([user_alice, user_bob])
+    perm_db_session.commit()
+
+    token_alice = create_access_token(data={"sub": str(user_alice.id), "role": "developer"})
+    token_bob = create_access_token(data={"sub": str(user_bob.id), "role": "developer"})
+
+    repo_alice = Repository(
+        owner="alice-ci-org",
+        name="alice-ci-repo",
+        full_name="alice-ci-org/alice-ci-repo",
+        created_by=user_alice.id,
+        is_public=False,
+    )
+    perm_db_session.add(repo_alice)
+    perm_db_session.commit()
+
+    run = WorkflowRun(
+        repo_id=repo_alice.id,
+        github_run_id=6001,
+        name="backend-test",
+        status="completed",
+        conclusion="failure",
+        created_at=datetime.now(timezone.utc),
+    )
+    doc = Document(
+        repo_id=repo_alice.id,
+        source_type="project_doc",
+        source_id=uuid4(),
+        title="Alice Doc",
+        content="Confidential content",
+        metadata={"title": "Alice Doc"},
+    )
+    perm_db_session.add_all([run, doc])
+    perm_db_session.commit()
+
+    # 1. Bob 尝试查看 Alice 仓库的 CI 运行记录，必须被拦截 (403 或 404)
+    resp_bob_ci = perm_client.get(
+        f"/api/repos/{repo_alice.id}/workflow-runs",
+        headers={"Authorization": f"Bearer {token_bob}"},
+    )
+    assert resp_bob_ci.status_code in (403, 404)
+
+    # 2. Bob 尝试查看单个私有 CI run 详情，被拦截
+    resp_bob_run = perm_client.get(
+        f"/api/workflow-runs/{run.id}",
+        headers={"Authorization": f"Bearer {token_bob}"},
+    )
+    assert resp_bob_run.status_code in (403, 404)
+
+    # 3. Bob 尝试查看 Alice 仓库的 RAG 详情，被拦截
+    resp_bob_rag = perm_client.get(
+        f"/api/rag/repositories/{repo_alice.id}",
+        headers={"Authorization": f"Bearer {token_bob}"},
+    )
+    assert resp_bob_rag.status_code in (403, 404)
+
+    # 4. Bob 尝试查看 Alice 仓库的 Knowledge 文档，被拦截
+    resp_bob_know = perm_client.get(
+        f"/api/repos/{repo_alice.id}/knowledge",
+        headers={"Authorization": f"Bearer {token_bob}"},
+    )
+    assert resp_bob_know.status_code in (403, 404)
+
+    # 5. Alice 能够正常访问自己的资源
+    resp_alice_ci = perm_client.get(
+        f"/api/repos/{repo_alice.id}/workflow-runs",
+        headers={"Authorization": f"Bearer {token_alice}"},
+    )
+    assert resp_alice_ci.status_code == 200
+    assert len(resp_alice_ci.json()) == 1

@@ -9,7 +9,12 @@ from app.db.session import get_db
 from app.schemas.code_graph import CodeGraphSearchResponse, CodeSymbolResponse
 from app.services.code_analysis import sync_repository_code_analysis
 from app.services.code_search import read_code_excerpt, repository_checkout_path
-from app.services.permissions import require_permission
+from app.services.permissions import (
+    check_repo_access,
+    get_current_user,
+    require_permission,
+    resolve_user,
+)
 from app.services.worktree_manager import pr_worktree_path
 
 router = APIRouter()
@@ -21,9 +26,8 @@ async def rebuild_code_graph(
     db: Session = Depends(get_db),
     _user: User = Depends(require_permission("repo:read")),
 ) -> dict:
-    repo = db.get(Repository, repo_id)
-    if repo is None:
-        raise HTTPException(status_code=404, detail="未找到仓库")
+    user = resolve_user(_user, db)
+    repo = check_repo_access(db, user, repo_id, "settings:manage")
     symbol_count = await sync_repository_code_analysis(db, repo)
     return {"repo_id": str(repo.id), "indexed_symbols": symbol_count}
 
@@ -38,6 +42,8 @@ async def list_code_symbols(
     db: Session = Depends(get_db),
     _user: User = Depends(require_permission("repo:read")),
 ) -> list[CodeSymbol]:
+    user = resolve_user(_user, db)
+    check_repo_access(db, user, repo_id, "repo:read")
     query = db.query(CodeSymbol).filter(CodeSymbol.repo_id == repo_id)
     if path:
         query = query.filter(CodeSymbol.path.contains(path))
@@ -58,9 +64,8 @@ async def search_code_graph(
     db: Session = Depends(get_db),
     _user: User = Depends(require_permission("repo:read")),
 ) -> dict:
-    repo = db.get(Repository, repo_id)
-    if repo is None:
-        raise HTTPException(status_code=404, detail="未找到仓库")
+    user = resolve_user(_user, db)
+    repo = check_repo_access(db, user, repo_id, "repo:read")
     text = q.strip()
     query = db.query(CodeSymbol).filter(CodeSymbol.repo_id == repo_id)
     if pr_id:

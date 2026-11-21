@@ -17,6 +17,7 @@ from app.db.models import (
     Document,
     PullRequest,
     Repository,
+    User,
     WorkflowRun,
 )
 from app.db.session import get_db
@@ -24,6 +25,7 @@ from app.schemas.ci import CIAnalysisResponse, WorkflowRunResponse
 from app.services.agents.ci_debug_agent import CIDebugAgent
 from app.services.chat_memory import ContextAssembler
 from app.services.code_search import search_repository_code
+from app.services.permissions import check_repo_access, get_current_user, resolve_user
 from app.services.rag.indexing import sanitize_ci_log
 from app.services.rag.retrieval import search_similar_documents
 from app.services.worktree_manager import prepare_pr_worktree
@@ -624,7 +626,13 @@ async def _ci_analysis_sse(
 
 
 @router.get("/repos/{repo_id}/workflow-runs", response_model=list[WorkflowRunResponse])
-async def list_workflow_runs(repo_id: UUID, db: Session = Depends(get_db)) -> list[WorkflowRun]:
+async def list_workflow_runs(
+    repo_id: UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> list[WorkflowRun]:
+    user = resolve_user(user, db)
+    check_repo_access(db, user, repo_id, "repo:read")
     return (
         db.query(WorkflowRun)
         .filter(WorkflowRun.repo_id == repo_id)
@@ -634,18 +642,30 @@ async def list_workflow_runs(repo_id: UUID, db: Session = Depends(get_db)) -> li
 
 
 @router.get("/workflow-runs/{run_id}", response_model=WorkflowRunResponse)
-async def get_workflow_run(run_id: UUID, db: Session = Depends(get_db)) -> WorkflowRun:
+async def get_workflow_run(
+    run_id: UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> WorkflowRun:
+    user = resolve_user(user, db)
     run = db.get(WorkflowRun, run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="未找到 workflow 运行")
+    check_repo_access(db, user, run.repo_id, "repo:read")
     return run
 
 
 @router.get("/workflow-runs/{run_id}/failed-jobs")
-async def get_failed_jobs(run_id: UUID, db: Session = Depends(get_db)) -> dict:
+async def get_failed_jobs(
+    run_id: UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    user = resolve_user(user, db)
     run = db.get(WorkflowRun, run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="未找到 workflow 运行")
+    check_repo_access(db, user, run.repo_id, "repo:read")
     failed_jobs = [
         {
             **job,
@@ -665,10 +685,13 @@ async def analyze_workflow_run(
     conversation_id: UUID | None = Query(default=None),
     use_pr_snapshot: bool = Query(default=True),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> CIAnalysisResponse:
+    user = resolve_user(user, db)
     run = db.get(WorkflowRun, run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="未找到 workflow 运行")
+    check_repo_access(db, user, run.repo_id, "agent:run")
     agent = CIDebugAgent()
     snapshot = _prepare_ci_pr_snapshot(db, run, enabled=use_pr_snapshot)
     _query, context, counts = _build_ci_analysis_context(db, run, conversation_id)
@@ -683,7 +706,13 @@ async def analyze_workflow_run_stream(
     run_id: UUID,
     conversation_id: UUID | None = Query(default=None),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> StreamingResponse:
+    user = resolve_user(user, db)
+    run = db.get(WorkflowRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="未找到 workflow 运行")
+    check_repo_access(db, user, run.repo_id, "agent:run")
     return StreamingResponse(
         _ci_analysis_sse(run_id, conversation_id, db), media_type="text/event-stream"
     )

@@ -67,7 +67,11 @@ export async function apiPatch<T>(path: string, body: unknown, options?: Request
   return response.json();
 }
 
-export async function apiUpload<T>(path: string, body: FormData, options?: RequestInit): Promise<T> {
+export async function apiUpload<T>(
+  path: string,
+  body: FormData,
+  options?: RequestInit,
+): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method: "POST",
     ...options,
@@ -135,7 +139,11 @@ export async function apiDelete<T>(path: string, options?: RequestInit): Promise
   return response.json();
 }
 
-export async function login(payload: { email?: string; username?: string; password: string }): Promise<TokenResponse> {
+export async function login(payload: {
+  email?: string;
+  username?: string;
+  password: string;
+}): Promise<TokenResponse> {
   const res = await apiPost<TokenResponse>("/api/auth/login", payload);
   if (res?.access_token) {
     setStoredToken(res.access_token);
@@ -143,7 +151,11 @@ export async function login(payload: { email?: string; username?: string; passwo
   return res;
 }
 
-export async function register(payload: { email: string; name: string; password: string }): Promise<TokenResponse> {
+export async function register(payload: {
+  email: string;
+  name: string;
+  password: string;
+}): Promise<TokenResponse> {
   const res = await apiPost<TokenResponse>("/api/auth/register", payload);
   if (res?.access_token) {
     setStoredToken(res.access_token);

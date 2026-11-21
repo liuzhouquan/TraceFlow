@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.db.models import Document, Repository
+from app.db.models import Document, Repository, User
 from app.db.session import get_db
 from app.schemas.knowledge import (
     KnowledgeGraphRebuildResponse,
@@ -36,6 +36,7 @@ from app.services.memory_hub import (
     record_recall_event,
     reject_memory_candidate,
 )
+from app.services.permissions import check_repo_access, get_current_user, resolve_user
 from app.services.rag.chunking import chunk_document
 from app.services.rag.document_extraction import MAX_DOCUMENT_BYTES, extract_document_text
 from app.services.rag.document_processing import SUPPORTED_KNOWLEDGE_SUFFIXES
@@ -62,7 +63,14 @@ USER_KNOWLEDGE_SOURCE_TYPES = [
 EMBEDDING_BATCH_SIZE = 64
 
 
-def _repo_or_404(db: Session, repo_id: uuid.UUID) -> Repository:
+def _repo_or_404(
+    db: Session,
+    repo_id: uuid.UUID,
+    user: User | None = None,
+    required_permission: str = "repo:read",
+) -> Repository:
+    if user is not None:
+        return check_repo_access(db, user, repo_id, required_permission)
     repo = db.get(Repository, repo_id)
     if repo is None:
         raise HTTPException(status_code=404, detail="未找到仓库")
@@ -153,9 +161,12 @@ def _team_from_document(doc: Document) -> TeamMemberResponse:
 
 @router.get("/{repo_id}/knowledge", response_model=list[KnowledgeItemResponse])
 async def list_knowledge(
-    repo_id: uuid.UUID, db: Session = Depends(get_db)
+    repo_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> list[KnowledgeItemResponse]:
-    _repo_or_404(db, repo_id)
+    user = resolve_user(user, db)
+    _repo_or_404(db, repo_id, user, "repo:read")
     docs = (
         db.query(Document)
         .filter(Document.repo_id == repo_id, Document.source_type.in_(USER_KNOWLEDGE_SOURCE_TYPES))
@@ -171,8 +182,10 @@ async def search_memory(
     q: str = Query(default=""),
     limit: int = Query(default=8, ge=1, le=30),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> MemorySearchResponse:
-    repo = _repo_or_404(db, repo_id)
+    user = resolve_user(user, db)
+    repo = _repo_or_404(db, repo_id, user, "repo:read")
     query = q.strip()
     results = EvidenceStore(db).search(repo.id, None, query, limit=limit) if query else []
     record_recall_event(
@@ -200,8 +213,10 @@ async def get_recall_events(
     conversation_id: uuid.UUID | None = Query(default=None),
     limit: int = Query(default=30, ge=1, le=100),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> list[RecallEventResponse]:
-    _repo_or_404(db, repo_id)
+    user = resolve_user(user, db)
+    _repo_or_404(db, repo_id, user, "repo:read")
     return [
         RecallEventResponse.model_validate(item)
         for item in list_recall_events(
@@ -212,9 +227,12 @@ async def get_recall_events(
 
 @router.get("/{repo_id}/memory/status", response_model=MemoryStatusResponse)
 async def get_memory_status(
-    repo_id: uuid.UUID, db: Session = Depends(get_db)
+    repo_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> MemoryStatusResponse:
-    repo = _repo_or_404(db, repo_id)
+    user = resolve_user(user, db)
+    repo = _repo_or_404(db, repo_id, user, "repo:read")
     return MemoryStatusResponse.model_validate(memory_status(db, repo))
 
 
@@ -224,8 +242,10 @@ async def get_memory_candidates(
     status: str | None = Query(default="pending"),
     limit: int = Query(default=50, ge=1, le=100),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> list[MemoryCandidateResponse]:
-    _repo_or_404(db, repo_id)
+    user = resolve_user(user, db)
+    _repo_or_404(db, repo_id, user, "repo:read")
     return [
         MemoryCandidateResponse.model_validate(item)
         for item in list_memory_candidates(db, repo_id=repo_id, status=status, limit=limit)
@@ -237,9 +257,13 @@ async def get_memory_candidates(
     response_model=MemoryCandidateActionResponse,
 )
 async def approve_candidate(
-    repo_id: uuid.UUID, candidate_id: uuid.UUID, db: Session = Depends(get_db)
+    repo_id: uuid.UUID,
+    candidate_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> MemoryCandidateActionResponse:
-    repo = _repo_or_404(db, repo_id)
+    user = resolve_user(user, db)
+    repo = _repo_or_404(db, repo_id, user, "settings:manage")
     try:
         candidate, doc = approve_memory_candidate(db, repo, candidate_id)
     except ValueError:
@@ -257,9 +281,13 @@ async def approve_candidate(
     response_model=MemoryCandidateActionResponse,
 )
 async def reject_candidate(
-    repo_id: uuid.UUID, candidate_id: uuid.UUID, db: Session = Depends(get_db)
+    repo_id: uuid.UUID,
+    candidate_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> MemoryCandidateActionResponse:
-    repo = _repo_or_404(db, repo_id)
+    user = resolve_user(user, db)
+    repo = _repo_or_404(db, repo_id, user, "settings:manage")
     try:
         candidate = reject_memory_candidate(db, repo, candidate_id)
     except ValueError:
@@ -273,8 +301,10 @@ async def create_memory_note(
     repo_id: uuid.UUID,
     payload: MemoryNoteRequest,
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> KnowledgeItemResponse:
-    _repo_or_404(db, repo_id)
+    user = resolve_user(user, db)
+    _repo_or_404(db, repo_id, user, "draft:create")
     content = payload.content.strip()
     title = payload.title.strip() or "未命名记忆"
     if not content and not title:
@@ -287,9 +317,9 @@ async def create_memory_note(
         source_id,
         title,
         content or title,
-        {"display_title": title, "created_by": "user"},
+        {"display_title": title, "created_by": user.name},
     )
-    rebuild_knowledge_graph(db, _repo_or_404(db, repo_id))
+    rebuild_knowledge_graph(db, _repo_or_404(db, repo_id, user, "repo:read"))
     return _group_documents([doc])[0]
 
 
@@ -298,8 +328,10 @@ async def upload_knowledge_file(
     repo_id: uuid.UUID,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> KnowledgeUploadResponse:
-    repo = _repo_or_404(db, repo_id)
+    user = resolve_user(user, db)
+    repo = _repo_or_404(db, repo_id, user, "settings:manage")
     data = await file.read(MAX_DOCUMENT_BYTES + 1)
     if not data:
         raise HTTPException(status_code=400, detail="Uploaded file is empty")
@@ -393,8 +425,10 @@ async def get_knowledge_graph(
     center_id: str | None = Query(default=None),
     depth: int = Query(default=1, ge=1, le=2),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> KnowledgeGraphResponse:
-    repo = _repo_or_404(db, repo_id)
+    user = resolve_user(user, db)
+    repo = _repo_or_404(db, repo_id, user, "repo:read")
     return KnowledgeGraphResponse.model_validate(
         knowledge_graph_payload(db, repo, center_type=center_type, center_id=center_id, depth=depth)
     )
@@ -402,9 +436,12 @@ async def get_knowledge_graph(
 
 @router.post("/{repo_id}/knowledge/graph/rebuild", response_model=KnowledgeGraphRebuildResponse)
 async def rebuild_knowledge_graph_route(
-    repo_id: uuid.UUID, db: Session = Depends(get_db)
+    repo_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> KnowledgeGraphRebuildResponse:
-    repo = _repo_or_404(db, repo_id)
+    user = resolve_user(user, db)
+    repo = _repo_or_404(db, repo_id, user, "settings:manage")
     result = rebuild_knowledge_graph(db, repo)
     return KnowledgeGraphRebuildResponse(
         repo_id=repo.id, edges=result["edges"], nodes=result["nodes"]
@@ -417,18 +454,23 @@ async def delete_knowledge_item(
     source_id: uuid.UUID,
     source_type: str | None = Query(default=None),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> dict[str, Any]:
-    _repo_or_404(db, repo_id)
+    user = resolve_user(user, db)
+    _repo_or_404(db, repo_id, user, "settings:manage")
     count = delete_document_group(db, repo_id, source_id, source_type=source_type)
-    rebuild_knowledge_graph(db, _repo_or_404(db, repo_id))
+    rebuild_knowledge_graph(db, _repo_or_404(db, repo_id, user, "repo:read"))
     return {"repo_id": str(repo_id), "source_id": str(source_id), "deleted": count}
 
 
 @router.get("/{repo_id}/team-members", response_model=list[TeamMemberResponse])
 async def list_team_members(
-    repo_id: uuid.UUID, db: Session = Depends(get_db)
+    repo_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> list[TeamMemberResponse]:
-    _repo_or_404(db, repo_id)
+    user = resolve_user(user, db)
+    _repo_or_404(db, repo_id, user, "repo:read")
     docs = (
         db.query(Document)
         .filter(Document.repo_id == repo_id, Document.source_type == "team_member")
@@ -443,8 +485,10 @@ async def create_team_member(
     repo_id: uuid.UUID,
     payload: TeamMemberRequest,
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> TeamMemberResponse:
-    _repo_or_404(db, repo_id)
+    user = resolve_user(user, db)
+    _repo_or_404(db, repo_id, user, "settings:manage")
     name = payload.name.strip()
     if not name:
         raise HTTPException(status_code=400, detail="团队成员姓名为必填项")
@@ -473,15 +517,19 @@ async def create_team_member(
             "tech_stack": payload.tech_stack.strip(),
         },
     )
-    rebuild_knowledge_graph(db, _repo_or_404(db, repo_id))
+    rebuild_knowledge_graph(db, _repo_or_404(db, repo_id, user, "repo:read"))
     return _team_from_document(doc)
 
 
 @router.delete("/{repo_id}/team-members/{member_id}")
 async def delete_team_member(
-    repo_id: uuid.UUID, member_id: uuid.UUID, db: Session = Depends(get_db)
+    repo_id: uuid.UUID,
+    member_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> dict[str, Any]:
-    _repo_or_404(db, repo_id)
+    user = resolve_user(user, db)
+    _repo_or_404(db, repo_id, user, "settings:manage")
     count = delete_document_group(db, repo_id, member_id, source_type="team_member")
-    rebuild_knowledge_graph(db, _repo_or_404(db, repo_id))
+    rebuild_knowledge_graph(db, _repo_or_404(db, repo_id, user, "repo:read"))
     return {"repo_id": str(repo_id), "member_id": str(member_id), "deleted": count}

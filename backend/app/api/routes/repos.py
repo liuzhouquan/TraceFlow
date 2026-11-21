@@ -64,14 +64,11 @@ from app.services.permissions import (
     filter_user_repositories,
     get_current_user,
     require_permission,
+    resolve_user,
     write_audit_log,
 )
 
-
-def _resolve_user(user: Any, db: Session) -> User:
-    if isinstance(user, User):
-        return user
-    return ensure_demo_user(db)
+_resolve_user = resolve_user
 
 
 from app.services.github.client import GitHubClient

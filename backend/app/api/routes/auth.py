@@ -26,14 +26,14 @@ async def register(
     if db.query(User).filter(User.name == name).first():
         raise HTTPException(status_code=400, detail="该用户名已存在")
 
-    allowed_roles = {"owner", "maintainer", "developer", "viewer"}
-    requested_role = payload.role.strip().lower()
-    if requested_role in allowed_roles:
-        role = requested_role
-    elif db.query(User).count() == 0:
-        role = "owner"
-    else:
-        role = "developer"
+    requested_role = (payload.role or "developer").strip().lower()
+    if requested_role in ("owner", "maintainer"):
+        raise HTTPException(
+            status_code=400,
+            detail="普通用户注册不允许指定特权角色 (owner/maintainer)",
+        )
+
+    role = requested_role if requested_role in ("developer", "viewer") else "developer"
 
     user = User(
         name=name,

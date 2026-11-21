@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from typing import Any
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, Request
@@ -79,7 +80,7 @@ def get_current_user(
         return user
 
     # 未提供 Bearer 令牌
-    if settings.auth_required or not settings.demo_mode:
+    if settings.auth_required or not settings.demo_mode or settings.is_production:
         raise HTTPException(
             status_code=401,
             detail="需要身份认证",
@@ -87,6 +88,18 @@ def get_current_user(
         )
 
     # 开发/演示降级兼容
+    return ensure_demo_user(db)
+
+
+def resolve_user(user: Any, db: Session) -> User:
+    if isinstance(user, User):
+        return user
+    if settings.auth_required or not settings.demo_mode or settings.is_production:
+        raise HTTPException(
+            status_code=401,
+            detail="需要身份认证",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     return ensure_demo_user(db)
 
 

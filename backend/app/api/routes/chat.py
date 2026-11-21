@@ -20,6 +20,7 @@ from app.db.models import (
     Issue,
     PullRequest,
     Repository,
+    User,
     WorkflowRun,
 )
 from app.db.session import get_db
@@ -33,6 +34,7 @@ from app.schemas.chat import (
 )
 from app.services.agents.ci_debug_agent import CIDebugAgent
 from app.services.agents.chat_agent import ChatAgent, encode_sse
+from app.services.permissions import check_repo_access, get_current_user, resolve_user
 from app.services.agents.issue_agent import IssueAgent
 from app.services.agents.planner_agent import PlannerAgent
 from app.services.agents.pr_review_agent import PRReviewAgent
@@ -120,7 +122,11 @@ async def list_workflow_runs(
     repo_id: uuid.UUID | None = Query(default=None),
     limit: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> list[dict[str, Any]]:
+    user = resolve_user(user, db)
+    if repo_id is not None:
+        _repo_or_404(db, repo_id, user, "repo:read")
     query = db.query(AgentWorkflowRun)
     if repo_id is not None:
         query = query.filter(AgentWorkflowRun.repo_id == repo_id)
@@ -176,8 +182,10 @@ async def chat_history(
     limit: int = Query(default=100, ge=1, le=500),
     before_message_id: uuid.UUID | None = Query(default=None),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> list[dict[str, Any]]:
-    _repo_or_404(db, repo_id)
+    user = resolve_user(user, db)
+    _repo_or_404(db, repo_id, user, "repo:read")
     conversation = ensure_conversation(db, repo_id, conversation_id)
     conversation_id = conversation.id
     db.commit()
@@ -210,7 +218,14 @@ async def chat_history(
     ]
 
 
-def _repo_or_404(db: Session, repo_id: uuid.UUID) -> Repository:
+def _repo_or_404(
+    db: Session,
+    repo_id: uuid.UUID,
+    user: User | None = None,
+    required_permission: str = "repo:read",
+) -> Repository:
+    if user is not None:
+        return check_repo_access(db, user, repo_id, required_permission)
     repo = db.get(Repository, repo_id)
     if repo is None:
         raise HTTPException(status_code=404, detail="未找到指定仓库。")
@@ -2167,7 +2182,13 @@ async def _conversation_sse(payload: ChatRequest, db: Session):
 
 
 @router.post("/plan")
-async def chat_plan(payload: ChatRequest, db: Session = Depends(get_db)) -> dict[str, Any]:
+async def chat_plan(
+    payload: ChatRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    user = resolve_user(user, db)
+    _repo_or_404(db, payload.repo_id, user, "agent:run")
     try:
         return await _conversation_plan(payload, db)
     except WorkflowTargetResolutionError as exc:
@@ -2176,28 +2197,47 @@ async def chat_plan(payload: ChatRequest, db: Session = Depends(get_db)) -> dict
 
 @router.post("/plan/execute/stream")
 async def chat_plan_execute_stream(
-    payload: ChatPlanExecuteRequest, db: Session = Depends(get_db)
+    payload: ChatPlanExecuteRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> StreamingResponse:
+    user = resolve_user(user, db)
+    _repo_or_404(db, payload.repo_id, user, "agent:run")
     return StreamingResponse(
         _conversation_plan_execute_sse(payload, db), media_type="text/event-stream"
     )
 
 
 @router.post("", response_model=ChatResponse)
-async def chat(payload: ChatRequest, db: Session = Depends(get_db)) -> dict[str, Any]:
+async def chat(
+    payload: ChatRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    user = resolve_user(user, db)
+    _repo_or_404(db, payload.repo_id, user, "agent:run")
     return await _conversation_response(payload, db)
 
 
 @router.post("/stream")
-async def chat_stream(payload: ChatRequest, db: Session = Depends(get_db)) -> StreamingResponse:
+async def chat_stream(
+    payload: ChatRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> StreamingResponse:
+    user = resolve_user(user, db)
+    _repo_or_404(db, payload.repo_id, user, "agent:run")
     return StreamingResponse(_conversation_sse(payload, db), media_type="text/event-stream")
 
 
 @router.post("/recommendations", response_model=PromptRecommendationResponse)
 async def prompt_recommendations(
-    payload: PromptRecommendationRequest, db: Session = Depends(get_db)
+    payload: PromptRecommendationRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> dict[str, Any]:
-    repo = _repo_or_404(db, payload.repo_id)
+    user = resolve_user(user, db)
+    repo = _repo_or_404(db, payload.repo_id, user, "repo:read")
     issues, prs, runs = _repo_payload(repo.id, db)
     result = await RecommendationAgent().run(
         _recommendation_payload(repo, issues, prs, runs, payload.exclude, payload.limit),

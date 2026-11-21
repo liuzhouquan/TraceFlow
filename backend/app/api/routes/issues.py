@@ -14,16 +14,12 @@ from app.schemas.issues import IssueAnalysisResponse, IssueResponse
 from app.services.agents.issue_agent import IssueAgent
 from app.services.chat_memory import ContextAssembler
 from app.services.code_search import search_repository_code
-from app.services.permissions import check_repo_access, ensure_demo_user, get_current_user
+from app.services.permissions import check_repo_access, get_current_user, resolve_user
 from app.services.rag.retrieval import search_similar_documents
 
 router = APIRouter()
 
-
-def _resolve_user(user: Any, db: Session) -> User:
-    if isinstance(user, User):
-        return user
-    return ensure_demo_user(db)
+_resolve_user = resolve_user
 
 
 PROJECT_DOC_TYPES = {"knowledge_file", "memory_note", "project_doc"}

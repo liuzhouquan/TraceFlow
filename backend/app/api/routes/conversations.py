@@ -8,15 +8,11 @@ from app.db.models import Repository, User
 from app.db.session import get_db
 from app.schemas.conversations import ConversationCreateRequest, ConversationResponse
 from app.services.conversations import create_conversation, delete_conversation, list_conversations
-from app.services.permissions import check_repo_access, ensure_demo_user, get_current_user
+from app.services.permissions import check_repo_access, get_current_user, resolve_user
 
 router = APIRouter()
 
-
-def _resolve_user(user: Any, db: Session) -> User:
-    if isinstance(user, User):
-        return user
-    return ensure_demo_user(db)
+_resolve_user = resolve_user
 
 
 def _repo_or_404(db: Session, repo_id: uuid.UUID, user: User | None = None) -> Repository:

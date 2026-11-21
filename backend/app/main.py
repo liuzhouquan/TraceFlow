@@ -27,6 +27,7 @@ from app.api.routes import (
     workspaces,
 )
 from app.core.config import settings
+from app.db.migration import run_migrations
 from app.db.models import Base
 from app.db.session import engine
 from app.services.scheduler import periodic_repo_sync_loop
@@ -87,112 +88,39 @@ def create_app() -> FastAPI:
         return {"status": "ok", "app": settings.app_name}
 
     @app.on_event("startup")
-    async def create_demo_tables() -> None:
-        # 课程项目默认自动建表；生产风格流程会在后续加入 Alembic 迁移。
-        Base.metadata.create_all(bind=engine)
-        inspector = inspect(engine)
-        if "users" in inspector.get_table_names():
-            columns = {column["name"] for column in inspector.get_columns("users")}
-            with engine.begin() as connection:
-                if "role" not in columns:
-                    connection.execute(
-                        text("ALTER TABLE users ADD COLUMN role VARCHAR(80) DEFAULT 'owner'")
-                    )
-                if "email" not in columns:
-                    connection.execute(text("ALTER TABLE users ADD COLUMN email VARCHAR(255)"))
-                if "hashed_password" not in columns:
-                    connection.execute(
-                        text("ALTER TABLE users ADD COLUMN hashed_password VARCHAR(255)")
-                    )
-                if "is_active" not in columns:
-                    connection.execute(
-                        text("ALTER TABLE users ADD COLUMN is_active BOOLEAN DEFAULT 1")
-                    )
-                if "updated_at" not in columns:
-                    connection.execute(text("ALTER TABLE users ADD COLUMN updated_at TIMESTAMP"))
-        if "repositories" in inspector.get_table_names():
-            columns = {column["name"] for column in inspector.get_columns("repositories")}
-            with engine.begin() as connection:
-                if "created_by" not in columns:
-                    connection.execute(text("ALTER TABLE repositories ADD COLUMN created_by UUID"))
-                if "is_public" not in columns:
-                    connection.execute(
-                        text("ALTER TABLE repositories ADD COLUMN is_public BOOLEAN DEFAULT 0")
-                    )
-                if "provider" not in columns:
-                    connection.execute(
-                        text(
-                            "ALTER TABLE repositories ADD COLUMN provider VARCHAR(80) DEFAULT 'github'"
-                        )
-                    )
-                if "api_base_url" not in columns:
-                    connection.execute(
-                        text("ALTER TABLE repositories ADD COLUMN api_base_url TEXT")
-                    )
-                if "clone_url" not in columns:
-                    connection.execute(text("ALTER TABLE repositories ADD COLUMN clone_url TEXT"))
-                if "local_path" not in columns:
-                    connection.execute(text("ALTER TABLE repositories ADD COLUMN local_path TEXT"))
-                if "checkout_mode" not in columns:
-                    connection.execute(
-                        text(
-                            "ALTER TABLE repositories ADD COLUMN checkout_mode VARCHAR(80) DEFAULT 'managed'"
-                        )
-                    )
-                if "github_token_encrypted" not in columns:
-                    connection.execute(
-                        text("ALTER TABLE repositories ADD COLUMN github_token_encrypted TEXT")
-                    )
-        if "workflow_runs" in inspector.get_table_names():
-            columns = {column["name"] for column in inspector.get_columns("workflow_runs")}
-            if "jobs" not in columns:
-                with engine.begin() as connection:
-                    connection.execute(text("ALTER TABLE workflow_runs ADD COLUMN jobs JSON"))
-        for table_name in ["code_symbols", "code_relations"]:
-            if table_name in inspector.get_table_names():
-                columns = {column["name"] for column in inspector.get_columns(table_name)}
-                with engine.begin() as connection:
-                    if "pr_id" not in columns:
-                        connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN pr_id UUID"))
-                    if "pr_number" not in columns:
-                        connection.execute(
-                            text(f"ALTER TABLE {table_name} ADD COLUMN pr_number INTEGER")
-                        )
-        for table_name in ["chat_messages", "chat_sessions", "agent_runs", "evidence_items"]:
-            if table_name in inspector.get_table_names():
-                columns = {column["name"] for column in inspector.get_columns(table_name)}
-                if "conversation_id" not in columns:
-                    with engine.begin() as connection:
-                        connection.execute(
-                            text(f"ALTER TABLE {table_name} ADD COLUMN conversation_id UUID")
-                        )
-        for table_name in ["thread_memories", "conversation_memories"]:
-            if table_name in inspector.get_table_names():
-                columns = {column["name"] for column in inspector.get_columns(table_name)}
-                for column_name in [
-                    "facts",
-                    "tasks",
-                    "user_preferences",
-                    "repo_context",
-                    "citations",
-                ]:
-                    if column_name not in columns:
-                        with engine.begin() as connection:
-                            connection.execute(
-                                text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} JSON")
-                            )
+    async def initialize_database_and_services() -> None:
+        # 生产环境安全配置校验
+        settings.validate_security_settings()
+
+        # 统一使用 Alembic 迁移体系执行建表、升级与存量库纳管
+        try:
+            run_migrations(bind=engine)
+        except Exception as exc:
+            if settings.is_production:
+                raise
+            import logging
+
+            logging.getLogger(__name__).warning(f"启动期数据库自动迁移跳过或失败: {exc}")
+
         from app.db.session import SessionLocal
         from app.services.conversations import backfill_all_default_conversations
         from app.services.code_analysis import purge_legacy_code_documents
         from app.services.rag.vector_store import delete_milvus_documents, milvus_runtime_status
 
-        db = SessionLocal()
         try:
-            backfill_all_default_conversations(db)
-            if purge_legacy_code_documents(db):
-                db.commit()
-        finally:
-            db.close()
+            db = SessionLocal()
+            try:
+                backfill_all_default_conversations(db)
+                if purge_legacy_code_documents(db):
+                    db.commit()
+            finally:
+                db.close()
+        except Exception as exc:
+            if settings.is_production:
+                raise
+            import logging
+
+            logging.getLogger(__name__).warning(f"启动期默认会话补全或清理跳过: {exc}")
         app.state.rag_vector_status = milvus_runtime_status()
         delete_milvus_documents(source_types=["code_file"], strict=False)
         if settings.auto_sync_enabled:

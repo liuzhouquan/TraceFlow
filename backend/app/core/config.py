@@ -99,5 +99,27 @@ class Settings(BaseSettings):
         env_file=("../.env", ".env"), env_file_encoding="utf-8", extra="ignore"
     )
 
+    @property
+    def is_production(self) -> bool:
+        return self.app_env.strip().lower() in ("production", "prod")
+
+    def validate_security_settings(self) -> None:
+        if self.is_production:
+            insecure_keys = {
+                "traceflow-jwt-secret-key-change-in-production",
+                "change-me-in-local-dev",
+                "secret",
+                "default",
+            }
+            if (
+                not self.jwt_secret_key
+                or self.jwt_secret_key in insecure_keys
+                or len(self.jwt_secret_key) < 32
+            ):
+                raise ValueError(
+                    "生产环境 (APP_ENV=production) 检测到不安全的 JWT_SECRET_KEY！"
+                    "请配置至少 32 字符的高熵密钥。"
+                )
+
 
 settings = Settings()

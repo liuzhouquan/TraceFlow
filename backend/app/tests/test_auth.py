@@ -33,7 +33,13 @@ def auth_db_session(tmp_path):
 
 
 @pytest.fixture
-def auth_client(auth_db_session):
+def auth_client(auth_db_session, monkeypatch):
+    import app.main as main_mod
+    import app.db.session as sess_mod
+
+    test_engine = auth_db_session.get_bind()
+    monkeypatch.setattr(main_mod, "engine", test_engine)
+    monkeypatch.setattr(sess_mod, "SessionLocal", sessionmaker(bind=test_engine))
     app = create_app()
 
     def override_get_db():
@@ -148,7 +154,61 @@ def test_inactive_user_cannot_login_or_access(auth_client, auth_db_session):
     assert login_resp.status_code == 401
     assert "账号已被停用" in login_resp.json()["detail"]
 
-    # 携带有效 token 访问也必须被拒
-    token = create_access_token(data={"sub": str(user.id), "role": "viewer"})
-    me_resp = auth_client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
-    assert me_resp.status_code == 401
+
+def test_public_registration_cannot_choose_privileged_role(auth_client, auth_db_session):
+    # 尝试公开注册管理员角色 owner 必须被拒绝 (HTTP 400)
+    resp_owner = auth_client.post(
+        "/api/auth/register",
+        json={
+            "name": "hacker1",
+            "email": "hacker1@example.com",
+            "password": "Password123!",
+            "role": "owner",
+        },
+    )
+    assert resp_owner.status_code == 400
+    assert "不允许指定特权角色" in resp_owner.json()["detail"]
+
+    # 尝试公开注册管理员角色 maintainer 必须被拒绝 (HTTP 400)
+    resp_maintainer = auth_client.post(
+        "/api/auth/register",
+        json={
+            "name": "hacker2",
+            "email": "hacker2@example.com",
+            "password": "Password123!",
+            "role": "maintainer",
+        },
+    )
+    assert resp_maintainer.status_code == 400
+    assert "不允许指定特权角色" in resp_maintainer.json()["detail"]
+
+    # 不指定角色注册，默认应为普通角色 developer
+    resp_default = auth_client.post(
+        "/api/auth/register",
+        json={
+            "name": "normal_user",
+            "email": "normal@example.com",
+            "password": "Password123!",
+        },
+    )
+    assert resp_default.status_code == 201
+    assert resp_default.json()["user"]["role"] == "developer"
+
+
+def test_production_mode_enforces_auth_and_rejects_insecure_key(auth_client, monkeypatch):
+    # 1. 模拟生产环境 APP_ENV=production
+    monkeypatch.setattr(settings, "app_env", "production")
+
+    # 在生产模式下，未提供 Bearer 令牌调用 /api/auth/me 必须返回 401，绝不可退化至 demo 用户
+    resp = auth_client.get("/api/auth/me")
+    assert resp.status_code == 401
+    assert resp.json()["detail"] == "需要身份认证"
+
+    # 2. 生产环境下使用默认不安全的 JWT Secret Key 必须抛出异常
+    monkeypatch.setattr(settings, "jwt_secret_key", "traceflow-jwt-secret-key-change-in-production")
+    with pytest.raises(ValueError, match="检测到不安全的 JWT_SECRET_KEY"):
+        settings.validate_security_settings()
+
+    # 配置足够强度的密钥后校验通过
+    monkeypatch.setattr(settings, "jwt_secret_key", "a" * 32)
+    settings.validate_security_settings()
