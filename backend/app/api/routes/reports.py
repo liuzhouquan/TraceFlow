@@ -3,10 +3,11 @@ from datetime import date, datetime, time, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.db.models import Issue, PullRequest, Repository, WorkflowRun
+from app.db.models import Issue, PullRequest, Repository, User, WorkflowRun
 from app.db.session import get_db
 from app.schemas.reports import WeeklyReportRequest, WeeklyReportResponse
 from app.services.agents.report_agent import ReportAgent
+from app.services.permissions import check_repo_access, get_current_user, resolve_user
 from app.services.rag.vector_store import add_document
 
 router = APIRouter()
@@ -46,7 +47,13 @@ def _pr_in_range(pr: PullRequest, start_at: datetime, end_at: datetime) -> bool:
 
 
 @router.post("/weekly", response_model=WeeklyReportResponse)
-async def weekly_report(payload: WeeklyReportRequest, db: Session = Depends(get_db)) -> dict:
+async def weekly_report(
+    payload: WeeklyReportRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    user = resolve_user(current_user, db)
+    check_repo_access(db, user, payload.repo_id, "repo:read")
     repo = db.get(Repository, payload.repo_id)
     if repo is None:
         raise HTTPException(status_code=404, detail="未找到仓库")
@@ -125,7 +132,16 @@ async def weekly_report(payload: WeeklyReportRequest, db: Session = Depends(get_
 
 
 @router.post("/repo-health")
-async def repo_health(payload: WeeklyReportRequest, db: Session = Depends(get_db)) -> dict:
+async def repo_health(
+    payload: WeeklyReportRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    user = resolve_user(current_user, db)
+    check_repo_access(db, user, payload.repo_id, "repo:read")
+    repo = db.get(Repository, payload.repo_id)
+    if repo is None:
+        raise HTTPException(status_code=404, detail="未找到仓库")
     open_issues = (
         db.query(Issue).filter(Issue.repo_id == payload.repo_id, Issue.state == "open").count()
     )

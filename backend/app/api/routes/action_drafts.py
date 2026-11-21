@@ -6,7 +6,15 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.security import decrypt_token
-from app.db.models import ActionDraft, AuditLog, Issue, PullRequest, Repository, User
+from app.db.models import (
+    ActionDraft,
+    AuditLog,
+    Issue,
+    PullRequest,
+    Repository,
+    RepositoryMember,
+    User,
+)
 from app.db.session import get_db
 from app.schemas.action_drafts import (
     ActionDraftConfirmResponse,
@@ -15,7 +23,12 @@ from app.schemas.action_drafts import (
     AuditLogResponse,
 )
 from app.services.github.client import GitHubClient
-from app.services.permissions import require_permission, write_audit_log
+from app.services.permissions import (
+    check_repo_access,
+    require_permission,
+    resolve_user,
+    write_audit_log,
+)
 
 router = APIRouter()
 
@@ -84,6 +97,8 @@ async def create_action_draft(
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("draft:create")),
 ) -> ActionDraft:
+    u = resolve_user(user, db)
+    check_repo_access(db, u, payload.repo_id, "draft:create")
     repo = db.get(Repository, payload.repo_id)
     if repo is None:
         raise HTTPException(status_code=404, detail="未找到仓库")
@@ -95,13 +110,13 @@ async def create_action_draft(
         title=payload.title,
         content=payload.content,
         risk_level=payload.risk_level,
-        created_by=user.id,
+        created_by=u.id,
         meta=payload.metadata,
     )
     db.add(draft)
     write_audit_log(
         db,
-        user=user,
+        user=u,
         repo_id=payload.repo_id,
         action="action_draft.create",
         target_type=payload.target_type,
@@ -120,9 +135,30 @@ async def list_action_drafts(
     db: Session = Depends(get_db),
     _user: User = Depends(require_permission("repo:read")),
 ) -> list[ActionDraft]:
+    user = resolve_user(_user, db)
     query = db.query(ActionDraft)
     if repo_id:
+        check_repo_access(db, user, repo_id, "repo:read")
         query = query.filter(ActionDraft.repo_id == repo_id)
+    else:
+        if user.role not in ("owner", "maintainer"):
+            accessible_repos = (
+                db.query(Repository.id)
+                .filter(
+                    (Repository.created_by == user.id)
+                    | (Repository.is_public == True)  # noqa: E712
+                    | (
+                        Repository.id.in_(
+                            db.query(RepositoryMember.repo_id).filter(
+                                RepositoryMember.user_id == user.id
+                            )
+                        )
+                    )
+                )
+                .all()
+            )
+            accessible_ids = [r[0] for r in accessible_repos]
+            query = query.filter(ActionDraft.repo_id.in_(accessible_ids))
     if status:
         query = query.filter(ActionDraft.status == status)
     return query.order_by(ActionDraft.created_at.desc()).limit(100).all()
@@ -134,9 +170,32 @@ async def list_audit_logs(
     db: Session = Depends(get_db),
     _user: User = Depends(require_permission("settings:manage")),
 ) -> list[AuditLog]:
+    user = resolve_user(_user, db)
     query = db.query(AuditLog)
     if repo_id:
+        check_repo_access(db, user, repo_id, "repo:read")
         query = query.filter(AuditLog.repo_id == repo_id)
+    else:
+        if user.role not in ("owner", "maintainer"):
+            accessible_repos = (
+                db.query(Repository.id)
+                .filter(
+                    (Repository.created_by == user.id)
+                    | (Repository.is_public == True)  # noqa: E712
+                    | (
+                        Repository.id.in_(
+                            db.query(RepositoryMember.repo_id).filter(
+                                RepositoryMember.user_id == user.id
+                            )
+                        )
+                    )
+                )
+                .all()
+            )
+            accessible_ids = [r[0] for r in accessible_repos]
+            query = query.filter(
+                (AuditLog.repo_id.in_(accessible_ids)) | (AuditLog.user_id == user.id)
+            )
     return query.order_by(AuditLog.created_at.desc()).limit(100).all()
 
 
@@ -146,9 +205,11 @@ async def get_action_draft(
     db: Session = Depends(get_db),
     _user: User = Depends(require_permission("repo:read")),
 ) -> ActionDraft:
+    user = resolve_user(_user, db)
     draft = db.get(ActionDraft, draft_id)
     if draft is None:
         raise HTTPException(status_code=404, detail="未找到安全草稿")
+    check_repo_access(db, user, draft.repo_id, "repo:read")
     return draft
 
 
@@ -158,15 +219,17 @@ async def cancel_action_draft(
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("draft:create")),
 ) -> ActionDraft:
+    u = resolve_user(user, db)
     draft = db.get(ActionDraft, draft_id)
     if draft is None:
         raise HTTPException(status_code=404, detail="未找到安全草稿")
+    check_repo_access(db, u, draft.repo_id, "draft:create")
     if draft.status != "pending_confirmation":
         raise HTTPException(status_code=400, detail="只有待确认草稿可以取消")
     draft.status = "cancelled"
     write_audit_log(
         db,
-        user=user,
+        user=u,
         repo_id=draft.repo_id,
         action="action_draft.cancel",
         target_type=draft.target_type,
@@ -183,9 +246,11 @@ async def confirm_action_draft(
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("draft:approve")),
 ) -> dict:
+    u = resolve_user(user, db)
     draft = db.get(ActionDraft, draft_id)
     if draft is None:
         raise HTTPException(status_code=404, detail="未找到安全草稿")
+    check_repo_access(db, u, draft.repo_id, "draft:approve")
     if draft.status != "pending_confirmation":
         raise HTTPException(status_code=400, detail="只有待确认草稿可以执行")
     repo = db.get(Repository, draft.repo_id)
@@ -194,12 +259,12 @@ async def confirm_action_draft(
     try:
         result = await _execute_github_draft(db, draft, repo)
         draft.status = "executed"
-        draft.confirmed_by = user.id
+        draft.confirmed_by = u.id
         draft.executed_at = datetime.now(timezone.utc)
         draft.execution_result = result
         audit = write_audit_log(
             db,
-            user=user,
+            user=u,
             repo_id=draft.repo_id,
             action=f"action_draft.confirm.{draft.draft_type}",
             target_type=draft.target_type,
@@ -210,12 +275,12 @@ async def confirm_action_draft(
         )
     except Exception as exc:
         draft.status = "failed"
-        draft.confirmed_by = user.id
+        draft.confirmed_by = u.id
         draft.executed_at = datetime.now(timezone.utc)
         draft.error_message = str(exc)
         audit = write_audit_log(
             db,
-            user=user,
+            user=u,
             repo_id=draft.repo_id,
             action=f"action_draft.confirm.{draft.draft_type}",
             target_type=draft.target_type,

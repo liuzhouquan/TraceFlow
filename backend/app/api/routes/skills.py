@@ -1,5 +1,6 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
+from app.db.models import User
 from app.schemas.skills import (
     McpRuntimeResponse,
     McpToolResponse,
@@ -8,6 +9,7 @@ from app.schemas.skills import (
     SkillResponse,
 )
 from app.services.mcp_client import McpClientError, StdioMcpClient
+from app.services.permissions import get_current_user
 from app.services.skills import get_skill_registry
 
 router = APIRouter()
@@ -22,13 +24,17 @@ def _skill_response(skill, include_instructions: bool = False) -> SkillResponse:
 
 
 @router.get("", response_model=SkillListResponse)
-async def list_skills() -> SkillListResponse:
+async def list_skills(
+    current_user: User = Depends(get_current_user),
+) -> SkillListResponse:
     registry = get_skill_registry()
     return SkillListResponse(skills=[_skill_response(skill) for skill in registry.list_skills()])
 
 
 @router.get("/mcp-status", response_model=McpRuntimeResponse)
-async def get_mcp_status() -> McpRuntimeResponse:
+async def get_mcp_status(
+    current_user: User = Depends(get_current_user),
+) -> McpRuntimeResponse:
     try:
         inspection = await StdioMcpClient().inspect_server()
     except (McpClientError, OSError) as exc:
@@ -55,7 +61,10 @@ async def get_mcp_status() -> McpRuntimeResponse:
 
 
 @router.get("/{skill_name}", response_model=SkillResponse)
-async def get_skill(skill_name: str) -> SkillResponse:
+async def get_skill(
+    skill_name: str,
+    current_user: User = Depends(get_current_user),
+) -> SkillResponse:
     registry = get_skill_registry()
     skill = registry.get_skill(skill_name)
     if skill is None:

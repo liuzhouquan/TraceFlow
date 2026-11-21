@@ -5,11 +5,19 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from app.db.models import AgentRun, ChatFeedback, ChatMessage, ChatSession, Conversation, Repository
+from app.db.models import (
+    AgentRun,
+    ChatFeedback,
+    ChatMessage,
+    ChatSession,
+    Conversation,
+    Repository,
+    User,
+)
 from app.db.session import get_db
 from app.schemas.feedback import ChatFeedbackCreate, ChatFeedbackResponse, ChatFeedbackReview
 from app.services.feedback_notifications import send_negative_feedback_notification
-from app.services.permissions import ensure_demo_user
+from app.services.permissions import check_repo_access, get_current_user, resolve_user
 
 router = APIRouter()
 
@@ -58,7 +66,10 @@ def _serialize_message(message: ChatMessage | None) -> dict[str, Any] | None:
 async def feedback_metrics(
     repo_id: uuid.UUID = Query(...),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> dict[str, Any]:
+    user = resolve_user(current_user, db)
+    check_repo_access(db, user, repo_id, "repo:read")
     rows = db.query(ChatFeedback).filter(ChatFeedback.repo_id == repo_id).all()
     assistant_messages = (
         db.query(ChatMessage)
@@ -92,11 +103,20 @@ async def feedback_metrics(
 
 
 @router.get("/trace/{run_id}")
-async def feedback_trace(run_id: uuid.UUID, db: Session = Depends(get_db)) -> dict[str, Any]:
+async def feedback_trace(
+    run_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    user = resolve_user(current_user, db)
     run = db.get(AgentRun, run_id)
     feedback = db.query(ChatFeedback).filter(ChatFeedback.run_id == run_id).one_or_none()
     if run is None and feedback is None:
         raise HTTPException(status_code=404, detail="未找到对应的执行轨迹")
+
+    repo_id = feedback.repo_id if feedback else run.repo_id if run else None
+    if repo_id:
+        check_repo_access(db, user, repo_id, "repo:read")
 
     assistant_message = db.get(ChatMessage, feedback.assistant_message_id) if feedback else None
     if assistant_message is None and run is not None:
@@ -174,7 +194,10 @@ async def list_feedback(
     conversation_id: uuid.UUID | None = Query(default=None),
     limit: int = Query(default=200, ge=1, le=500),
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> list[ChatFeedback]:
+    user = resolve_user(current_user, db)
+    check_repo_access(db, user, repo_id, "repo:read")
     query = db.query(ChatFeedback).filter(ChatFeedback.repo_id == repo_id)
     if conversation_id:
         query = query.filter(ChatFeedback.conversation_id == conversation_id)
@@ -183,8 +206,12 @@ async def list_feedback(
 
 @router.post("", response_model=ChatFeedbackResponse)
 async def create_feedback(
-    payload: ChatFeedbackCreate, db: Session = Depends(get_db)
+    payload: ChatFeedbackCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ChatFeedback:
+    user = resolve_user(current_user, db)
+    check_repo_access(db, user, payload.repo_id, "repo:read")
     repo = db.get(Repository, payload.repo_id)
     conversation = db.get(Conversation, payload.conversation_id)
     if repo is None or conversation is None or conversation.repo_id != repo.id:
@@ -192,7 +219,7 @@ async def create_feedback(
     message = _message_or_404(db, payload)
     run_id = _run_id_from_message(message)
     run = db.get(AgentRun, run_id) if run_id else None
-    reporter = ensure_demo_user(db)
+    reporter = user
 
     feedback = (
         db.query(ChatFeedback).filter(ChatFeedback.assistant_message_id == message.id).one_or_none()
@@ -255,15 +282,21 @@ async def review_feedback(
     feedback_id: uuid.UUID,
     payload: ChatFeedbackReview,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> ChatFeedback:
+    user = resolve_user(current_user, db)
     feedback = db.get(ChatFeedback, feedback_id)
     if feedback is None:
         raise HTTPException(status_code=404, detail="未找到反馈记录")
+    check_repo_access(db, user, feedback.repo_id, "agent:run")
     feedback.review_status = payload.review_status
     feedback.review_note = (payload.review_note or "").strip() or None
     feedback.reviewed_at = (
         datetime.now(timezone.utc) if payload.review_status in {"resolved", "dismissed"} else None
     )
+    db.commit()
+    db.refresh(feedback)
+    return feedback
     db.commit()
     db.refresh(feedback)
     return feedback

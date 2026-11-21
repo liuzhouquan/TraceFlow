@@ -8,7 +8,7 @@ from uuid import UUID
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from app.db.models import ActionDraft, EvalRun, Repository, User
+from app.db.models import ActionDraft, EvalRun, Repository, RepositoryMember, User
 from app.db.session import SessionLocal, get_db
 from app.schemas.evals import EvalIssueDraftRequest, EvalRunRequest, EvalRunResponse
 from app.services.evals.ragas_runner import (
@@ -19,7 +19,12 @@ from app.services.evals.ragas_runner import (
 )
 from app.services.evals.suites import AUTO_SMOKE_SUITE_ID, list_eval_suites, load_eval_suite
 from app.services.evals.runner import run_basic_eval
-from app.services.permissions import require_permission, write_audit_log
+from app.services.permissions import (
+    check_repo_access,
+    require_permission,
+    resolve_user,
+    write_audit_log,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -64,6 +69,8 @@ async def get_eval_suites(
     db: Session = Depends(get_db),
     _user=Depends(require_permission("eval:read")),
 ) -> list[dict]:
+    u = resolve_user(_user, db)
+    check_repo_access(db, u, repo_id, "eval:read")
     try:
         return list_eval_suites(db, repo_id)
     except ValueError as exc:
@@ -76,6 +83,9 @@ async def run_eval(
     db: Session = Depends(get_db),
     _user=Depends(require_permission("eval:read")),
 ) -> EvalRunResponse:
+    u = resolve_user(_user, db)
+    if payload.repo_id:
+        check_repo_access(db, u, payload.repo_id, "eval:read")
     result = await run_basic_eval(db, str(payload.repo_id) if payload.repo_id else None)
     eval_run = EvalRun(name=payload.name, result_json=result)
     db.add(eval_run)
@@ -97,6 +107,8 @@ async def run_rag_eval(
 ) -> EvalRunResponse:
     if payload.repo_id is None:
         raise HTTPException(status_code=400, detail="RAG Eval 需要 repo_id")
+    u = resolve_user(_user, db)
+    check_repo_access(db, u, payload.repo_id, "eval:read")
     if db.get(Repository, payload.repo_id) is None:
         raise HTTPException(status_code=404, detail="未找到仓库")
     if payload.cases is not None and payload.suite_id:
@@ -542,6 +554,8 @@ async def create_eval_issue_draft(
     repo = db.get(Repository, UUID(str(repo_id)))
     if repo is None:
         raise HTTPException(status_code=404, detail="未找到评测对应仓库")
+    u = resolve_user(user, db)
+    check_repo_access(db, u, repo.id, "draft:create")
     suite_label = (result.get("evaluation_set") or {}).get("label") or "RAGAS"
     title = payload.title or f"RAG 质量回归：{suite_label} 未通过"
     draft = ActionDraft(
@@ -551,13 +565,13 @@ async def create_eval_issue_draft(
         title=title,
         content=_issue_markdown(eval_run),
         risk_level="medium",
-        created_by=user.id,
+        created_by=u.id,
         meta={"eval_id": str(eval_run.id), "quality_status": result.get("quality_status")},
     )
     db.add(draft)
     write_audit_log(
         db,
-        user=user,
+        user=u,
         repo_id=repo.id,
         action="eval.issue_draft.create",
         target_type="eval_run",
@@ -576,6 +590,9 @@ async def list_evals(
     db: Session = Depends(get_db),
     _user=Depends(require_permission("eval:read")),
 ) -> list[dict]:
+    u = resolve_user(_user, db)
+    if repo_id is not None:
+        check_repo_access(db, u, repo_id, "eval:read")
     rows = db.query(EvalRun).order_by(EvalRun.created_at.desc()).limit(100).all()
     if repo_id is not None:
         rows = [
@@ -583,6 +600,28 @@ async def list_evals(
             for row in rows
             if str(((row.result_json or {}).get("target") or {}).get("repo_id") or "")
             == str(repo_id)
+        ]
+    elif u.role not in ("owner", "maintainer"):
+        accessible_repos = (
+            db.query(Repository.id)
+            .filter(
+                (Repository.created_by == u.id)
+                | (Repository.is_public == True)  # noqa: E712
+                | (
+                    Repository.id.in_(
+                        db.query(RepositoryMember.repo_id).filter(RepositoryMember.user_id == u.id)
+                    )
+                )
+            )
+            .all()
+        )
+        accessible_ids = {str(r[0]) for r in accessible_repos}
+        rows = [
+            row
+            for row in rows
+            if str(((row.result_json or {}).get("target") or {}).get("repo_id") or "")
+            in accessible_ids
+            or ((row.result_json or {}).get("target") or {}).get("repo_id") is None
         ]
     rows = rows[: max(1, min(limit, 100))]
     return [
@@ -608,10 +647,17 @@ async def get_eval(
         eval_uuid = UUID(eval_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="Eval id 无效") from exc
+    u = resolve_user(_user, db)
     eval_run = db.get(EvalRun, eval_uuid)
     if eval_run is None:
         raise HTTPException(status_code=404, detail="未找到 Eval run")
     result = eval_run.result_json or {}
+    target_repo = (result.get("target") or {}).get("repo_id")
+    if target_repo:
+        try:
+            check_repo_access(db, u, UUID(str(target_repo)), "eval:read")
+        except (ValueError, TypeError):
+            pass
     return {
         "eval_id": str(eval_run.id),
         "name": eval_run.name,

@@ -1,16 +1,23 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.db.models import Repository
+from app.db.models import Repository, User
 from app.db.session import get_db
 from app.schemas.search import SearchRequest, SearchResponse
+from app.services.permissions import check_repo_access, get_current_user, resolve_user
 from app.services.rag.retrieval import search_similar_documents
 
 router = APIRouter()
 
 
 @router.post("", response_model=SearchResponse)
-async def semantic_search(payload: SearchRequest, db: Session = Depends(get_db)) -> SearchResponse:
+async def semantic_search(
+    payload: SearchRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> SearchResponse:
+    user = resolve_user(current_user, db)
+    check_repo_access(db, user, payload.repo_id, "repo:read")
     repo = db.get(Repository, payload.repo_id)
     if repo is None:
         raise HTTPException(status_code=404, detail="未找到仓库")

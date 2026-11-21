@@ -4,7 +4,15 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.db.models import Issue, PullRequest, Repository, User, WorkflowRun, Workspace
+from app.db.models import (
+    Issue,
+    PullRequest,
+    Repository,
+    RepositoryMember,
+    User,
+    WorkflowRun,
+    Workspace,
+)
 from app.db.session import get_db
 from app.schemas.workspaces import (
     MultiRepoReportRequest,
@@ -12,7 +20,12 @@ from app.schemas.workspaces import (
     WorkspaceCreateRequest,
     WorkspaceResponse,
 )
-from app.services.permissions import require_permission, write_audit_log
+from app.services.permissions import (
+    check_repo_access,
+    require_permission,
+    resolve_user,
+    write_audit_log,
+)
 from app.services.rag.vector_store import add_document
 
 router = APIRouter()
@@ -58,6 +71,9 @@ async def create_workspace(
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("settings:manage")),
 ) -> Workspace:
+    u = resolve_user(user, db)
+    for repo_id in payload.repo_ids:
+        check_repo_access(db, u, repo_id, "repo:read")
     known_repo_ids = (
         {repo.id for repo in db.query(Repository).filter(Repository.id.in_(payload.repo_ids)).all()}
         if payload.repo_ids
@@ -70,11 +86,11 @@ async def create_workspace(
         name=payload.name,
         description=payload.description,
         repo_ids=[str(repo_id) for repo_id in payload.repo_ids],
-        created_by=user.id,
+        created_by=u.id,
     )
     db.add(workspace)
     write_audit_log(
-        db, user=user, action="workspace.create", request_json=payload.model_dump(mode="json")
+        db, user=u, action="workspace.create", request_json=payload.model_dump(mode="json")
     )
     db.commit()
     db.refresh(workspace)
@@ -86,7 +102,29 @@ async def list_workspaces(
     db: Session = Depends(get_db),
     _user: User = Depends(require_permission("repo:read")),
 ) -> list[Workspace]:
-    return db.query(Workspace).order_by(Workspace.updated_at.desc()).all()
+    u = resolve_user(_user, db)
+    workspaces = db.query(Workspace).order_by(Workspace.updated_at.desc()).all()
+    if u.role in ("owner", "maintainer"):
+        return workspaces
+    accessible_repos = (
+        db.query(Repository.id)
+        .filter(
+            (Repository.created_by == u.id)
+            | (Repository.is_public == True)  # noqa: E712
+            | (
+                Repository.id.in_(
+                    db.query(RepositoryMember.repo_id).filter(RepositoryMember.user_id == u.id)
+                )
+            )
+        )
+        .all()
+    )
+    accessible_ids = {str(r[0]) for r in accessible_repos}
+    return [
+        ws
+        for ws in workspaces
+        if ws.created_by == u.id or any(r in accessible_ids for r in (ws.repo_ids or []))
+    ]
 
 
 @router.post("/multi-repo-report", response_model=MultiRepoReportResponse)
@@ -95,9 +133,12 @@ async def multi_repo_report(
     db: Session = Depends(get_db),
     user: User = Depends(require_permission("agent:run")),
 ) -> dict:
+    u = resolve_user(user, db)
     repo_ids = _repo_ids_from_payload(db, payload)
     if not repo_ids:
         raise HTTPException(status_code=400, detail="至少选择一个仓库")
+    for r_id in repo_ids:
+        check_repo_access(db, u, r_id, "agent:run")
     start_at, end_at = _bounds(payload)
     repos = db.query(Repository).filter(Repository.id.in_(repo_ids)).all()
     summaries = []

@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from app.core.config import settings
 from app.core.security import create_access_token, hash_password
 from app.db.models import (
     AuditLog,
@@ -448,3 +449,200 @@ def test_cross_user_ci_and_rag_isolation(perm_client, perm_db_session):
     )
     assert resp_alice_ci.status_code == 200
     assert len(resp_alice_ci.json()) == 1
+
+
+def test_anonymous_access_blocked_on_all_unprotected_routes(
+    perm_client, perm_db_session, monkeypatch
+):
+    monkeypatch.setattr(settings, "auth_required", True)
+    monkeypatch.setattr(settings, "demo_mode", False)
+
+    fake_repo_id = uuid4()
+
+    # 1. POST /api/repos/{repo_id}/memory-index/snooze
+    res = perm_client.post(f"/api/repos/{fake_repo_id}/memory-index/snooze")
+    assert res.status_code == 401
+
+    # 2. GET /api/chat/feedback/metrics
+    res = perm_client.get(f"/api/chat/feedback/metrics?repo_id={fake_repo_id}")
+    assert res.status_code == 401
+
+    # 3. POST /api/search
+    res = perm_client.post("/api/search", json={"repo_id": str(fake_repo_id), "query": "auth test"})
+    assert res.status_code == 401
+
+    # 4. POST /api/reports/weekly
+    res = perm_client.post(
+        "/api/reports/weekly",
+        json={"repo_id": str(fake_repo_id), "start_date": "2026-01-01", "end_date": "2026-01-07"},
+    )
+    assert res.status_code == 401
+
+    # 5. POST /api/reports/repo-health
+    res = perm_client.post(
+        "/api/reports/repo-health",
+        json={"repo_id": str(fake_repo_id), "start_date": "2026-01-01", "end_date": "2026-01-07"},
+    )
+    assert res.status_code == 401
+
+    # 6. GET /api/skills
+    res = perm_client.get("/api/skills")
+    assert res.status_code == 401
+
+    # 7. GET /api/action-drafts
+    res = perm_client.get("/api/action-drafts")
+    assert res.status_code == 401
+
+    # 8. POST /api/workspaces/multi-repo-report
+    res = perm_client.post(
+        "/api/workspaces/multi-repo-report",
+        json={
+            "repo_ids": [str(fake_repo_id)],
+            "start_date": "2026-01-01",
+            "end_date": "2026-01-07",
+        },
+    )
+    assert res.status_code == 401
+
+
+def test_unrelated_developer_and_viewer_cross_repo_isolation(
+    perm_client, perm_db_session, monkeypatch
+):
+    from app.db.models import ActionDraft, RepositoryMember
+
+    monkeypatch.setattr(settings, "auth_required", True)
+    monkeypatch.setattr(settings, "demo_mode", False)
+
+    # 准备三个用户：Alice（Developer，Repo属主），Bob（Developer，无关开发者），Charlie（Viewer，只读协作者）
+    user_alice = User(
+        name="alice-dev",
+        role="developer",
+        email="alice.draft@test.com",
+        hashed_password=hash_password("pw123"),
+        is_active=True,
+    )
+    user_bob = User(
+        name="bob-dev",
+        role="developer",
+        email="bob.draft@test.com",
+        hashed_password=hash_password("pw123"),
+        is_active=True,
+    )
+    user_charlie = User(
+        name="charlie-view",
+        role="viewer",
+        email="charlie.draft@test.com",
+        hashed_password=hash_password("pw123"),
+        is_active=True,
+    )
+    perm_db_session.add_all([user_alice, user_bob, user_charlie])
+    perm_db_session.commit()
+
+    token_alice = create_access_token(data={"sub": str(user_alice.id), "role": "developer"})
+    token_bob = create_access_token(data={"sub": str(user_bob.id), "role": "developer"})
+    token_charlie = create_access_token(data={"sub": str(user_charlie.id), "role": "viewer"})
+
+    # 创建 Alice 的私有仓库
+    repo_alice = Repository(
+        owner="alice-org",
+        name="alice-private-repo",
+        full_name="alice-org/alice-private-repo",
+        created_by=user_alice.id,
+        is_public=False,
+    )
+    perm_db_session.add(repo_alice)
+    perm_db_session.commit()
+
+    # Charlie 作为只读协作者加入 Alice 仓库
+    member_charlie = RepositoryMember(
+        repo_id=repo_alice.id,
+        user_id=user_charlie.id,
+        role="viewer",
+    )
+    perm_db_session.add(member_charlie)
+
+    # 创建 Alice 仓库下的安全草稿
+    draft_alice = ActionDraft(
+        repo_id=repo_alice.id,
+        draft_type="create_issue",
+        target_type="repository",
+        title="Alice Confidential Draft",
+        content="Secret draft content",
+        risk_level="medium",
+        status="pending_confirmation",
+        created_by=user_alice.id,
+        meta={"some": "metadata"},
+    )
+    perm_db_session.add(draft_alice)
+    perm_db_session.commit()
+
+    # 1. 无关开发者 Bob 尝试列出草稿列表：结果中绝不可出现 Alice 的私有草稿
+    resp_list_bob = perm_client.get(
+        "/api/action-drafts",
+        headers={"Authorization": f"Bearer {token_bob}"},
+    )
+    assert resp_list_bob.status_code == 200
+    returned_ids = [d["id"] for d in resp_list_bob.json()]
+    assert str(draft_alice.id) not in returned_ids
+
+    # 2. 无关开发者 Bob 尝试直接读取 Alice 私有草稿详情：拦截 403 或 404
+    resp_get_bob = perm_client.get(
+        f"/api/action-drafts/{draft_alice.id}",
+        headers={"Authorization": f"Bearer {token_bob}"},
+    )
+    assert resp_get_bob.status_code in (403, 404)
+
+    # 3. 无关开发者 Bob 尝试取消 Alice 私有草稿：拦截 403 或 404
+    resp_cancel_bob = perm_client.post(
+        f"/api/action-drafts/{draft_alice.id}/cancel",
+        headers={"Authorization": f"Bearer {token_bob}"},
+    )
+    assert resp_cancel_bob.status_code in (403, 404)
+
+    # 4. 无关开发者 Bob 尝试跨库修改 Alice 仓库的项目索引 snooze 状态：拦截 403 或 404
+    resp_snooze_bob = perm_client.post(
+        f"/api/repos/{repo_alice.id}/memory-index/snooze",
+        json={"days": 14},
+        headers={"Authorization": f"Bearer {token_bob}"},
+    )
+    assert resp_snooze_bob.status_code in (403, 404)
+
+    # 5. 无关开发者 Bob 尝试多仓库周报探测 Alice 仓库：拦截 403 或 404
+    resp_report_bob = perm_client.post(
+        "/api/workspaces/multi-repo-report",
+        json={
+            "repo_ids": [str(repo_alice.id)],
+            "start_date": "2026-01-01",
+            "end_date": "2026-01-07",
+        },
+        headers={"Authorization": f"Bearer {token_bob}"},
+    )
+    assert resp_report_bob.status_code in (403, 404)
+
+    # 6. Viewer Charlie 能够只读查看草稿详情，但无法取消或执行草稿
+    resp_get_charlie = perm_client.get(
+        f"/api/action-drafts/{draft_alice.id}",
+        headers={"Authorization": f"Bearer {token_charlie}"},
+    )
+    assert resp_get_charlie.status_code == 200
+    assert resp_get_charlie.json()["id"] == str(draft_alice.id)
+
+    resp_cancel_charlie = perm_client.post(
+        f"/api/action-drafts/{draft_alice.id}/cancel",
+        headers={"Authorization": f"Bearer {token_charlie}"},
+    )
+    assert resp_cancel_charlie.status_code == 403
+
+    resp_confirm_charlie = perm_client.post(
+        f"/api/action-drafts/{draft_alice.id}/confirm",
+        headers={"Authorization": f"Bearer {token_charlie}"},
+    )
+    assert resp_confirm_charlie.status_code == 403
+
+    # 7. Alice 能够成功取消自己的草稿
+    resp_cancel_alice = perm_client.post(
+        f"/api/action-drafts/{draft_alice.id}/cancel",
+        headers={"Authorization": f"Bearer {token_alice}"},
+    )
+    assert resp_cancel_alice.status_code == 200
+    assert resp_cancel_alice.json()["status"] == "cancelled"
