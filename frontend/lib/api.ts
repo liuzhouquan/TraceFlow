@@ -1,34 +1,80 @@
+import { TokenResponse, User } from "./types";
+
 export const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 
-export async function apiGet<T>(path: string): Promise<T> {
-  const response = await fetch(`${API_BASE_URL}${path}`, { cache: "no-store" });
+const TOKEN_KEY = "traceflow_token";
+
+export function getStoredToken(): string | null {
+  if (typeof window === "undefined") return null;
+  return localStorage.getItem(TOKEN_KEY);
+}
+
+export function setStoredToken(token: string): void {
+  if (typeof window === "undefined") return;
+  localStorage.setItem(TOKEN_KEY, token);
+}
+
+export function removeStoredToken(): void {
+  if (typeof window === "undefined") return;
+  localStorage.removeItem(TOKEN_KEY);
+}
+
+function getAuthHeaders(): Record<string, string> {
+  const token = getStoredToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+export async function apiGet<T>(path: string, options?: RequestInit): Promise<T> {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    cache: "no-store",
+    ...options,
+    headers: {
+      ...getAuthHeaders(),
+      ...(options?.headers as Record<string, string> | undefined),
+    },
+  });
   if (!response.ok) await throwApiError(response);
   return response.json();
 }
 
-export async function apiPost<T>(path: string, body: unknown): Promise<T> {
+export async function apiPost<T>(path: string, body: unknown, options?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...getAuthHeaders(),
+      ...(options?.headers as Record<string, string> | undefined),
+    },
     body: JSON.stringify(body),
   });
   if (!response.ok) await throwApiError(response);
   return response.json();
 }
 
-export async function apiPatch<T>(path: string, body: unknown): Promise<T> {
+export async function apiPatch<T>(path: string, body: unknown, options?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method: "PATCH",
-    headers: { "Content-Type": "application/json" },
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...getAuthHeaders(),
+      ...(options?.headers as Record<string, string> | undefined),
+    },
     body: JSON.stringify(body),
   });
   if (!response.ok) await throwApiError(response);
   return response.json();
 }
 
-export async function apiUpload<T>(path: string, body: FormData): Promise<T> {
+export async function apiUpload<T>(path: string, body: FormData, options?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method: "POST",
+    ...options,
+    headers: {
+      ...getAuthHeaders(),
+      ...(options?.headers as Record<string, string> | undefined),
+    },
     body,
   });
   if (!response.ok) await throwApiError(response);
@@ -39,11 +85,15 @@ export async function apiPostStream(
   path: string,
   body: unknown,
   onEvent: (event: string, data: unknown) => void,
-  options: { signal?: AbortSignal } = {},
+  options: { signal?: AbortSignal; headers?: HeadersInit } = {},
 ): Promise<void> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...getAuthHeaders(),
+      ...(options.headers as Record<string, string> | undefined),
+    },
     body: JSON.stringify(body),
     signal: options.signal,
   });
@@ -72,10 +122,41 @@ export async function apiPostStream(
   }
 }
 
-export async function apiDelete<T>(path: string): Promise<T> {
-  const response = await fetch(`${API_BASE_URL}${path}`, { method: "DELETE" });
+export async function apiDelete<T>(path: string, options?: RequestInit): Promise<T> {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    method: "DELETE",
+    ...options,
+    headers: {
+      ...getAuthHeaders(),
+      ...(options?.headers as Record<string, string> | undefined),
+    },
+  });
   if (!response.ok) await throwApiError(response);
   return response.json();
+}
+
+export async function login(payload: { email?: string; username?: string; password: string }): Promise<TokenResponse> {
+  const res = await apiPost<TokenResponse>("/api/auth/login", payload);
+  if (res?.access_token) {
+    setStoredToken(res.access_token);
+  }
+  return res;
+}
+
+export async function register(payload: { email: string; name: string; password: string }): Promise<TokenResponse> {
+  const res = await apiPost<TokenResponse>("/api/auth/register", payload);
+  if (res?.access_token) {
+    setStoredToken(res.access_token);
+  }
+  return res;
+}
+
+export function logout(): void {
+  removeStoredToken();
+}
+
+export async function getCurrentUser(): Promise<User> {
+  return apiGet<User>("/api/auth/me");
 }
 
 async function throwApiError(response: Response): Promise<never> {

@@ -32,8 +32,27 @@ class RepoResponse(BaseModel):
     checkout_mode: str = "managed"
     description: str | None = None
     default_branch: str | None = None
+    created_by: UUID | None = None
+    is_public: bool = False
     last_sync_at: datetime | None = None
     updated_at: datetime | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class RepositoryMemberCreateRequest(BaseModel):
+    user_id: UUID
+    role: str = Field(default="developer", max_length=80)
+
+
+class RepositoryMemberResponse(BaseModel):
+    id: UUID
+    repo_id: UUID
+    user_id: UUID
+    role: str
+    created_at: datetime
+    user_name: str | None = None
+    user_email: str | None = None
 
     model_config = {"from_attributes": True}
 

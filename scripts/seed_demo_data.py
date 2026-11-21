@@ -1,6 +1,16 @@
 from datetime import datetime, timezone
 
-from app.db.models import Issue, PRFile, PRReviewComment, PullRequest, Repository, WorkflowRun
+from app.core.security import hash_password
+from app.db.models import (
+    Issue,
+    PRFile,
+    PRReviewComment,
+    PullRequest,
+    Repository,
+    RepositoryMember,
+    User,
+    WorkflowRun,
+)
 from app.db.session import Base, SessionLocal, engine
 from app.services.rag.indexing import index_repository_documents
 
@@ -9,6 +19,34 @@ def main() -> None:
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
     try:
+        # Ensure demo owner user exists
+        admin = db.query(User).filter(User.name == "admin").one_or_none()
+        if admin is None:
+            admin = User(
+                name="admin",
+                email="admin@traceflow.dev",
+                role="owner",
+                hashed_password=hash_password("admin123"),
+                is_active=True,
+            )
+            db.add(admin)
+            db.commit()
+            db.refresh(admin)
+
+        # Ensure demo developer user exists
+        demo_user = db.query(User).filter(User.name == "demo-user").one_or_none()
+        if demo_user is None:
+            demo_user = User(
+                name="demo-user",
+                email="demo@traceflow.dev",
+                role="developer",
+                hashed_password=hash_password("demo123"),
+                is_active=True,
+            )
+            db.add(demo_user)
+            db.commit()
+            db.refresh(demo_user)
+
         repo = (
             db.query(Repository)
             .filter(Repository.full_name == "course-demo/devflow-sample-api")
@@ -22,10 +60,35 @@ def main() -> None:
                 description="Demo repository for TraceFlow course",
                 default_branch="main",
                 github_id=10001,
+                created_by=admin.id,
+                is_public=True,
             )
             db.add(repo)
             db.commit()
             db.refresh(repo)
+        else:
+            if repo.created_by is None:
+                repo.created_by = admin.id
+                repo.is_public = True
+                db.commit()
+
+        # Ensure demo_user has member access
+        existing_member = (
+            db.query(RepositoryMember)
+            .filter(
+                RepositoryMember.repo_id == repo.id,
+                RepositoryMember.user_id == demo_user.id,
+            )
+            .one_or_none()
+        )
+        if existing_member is None:
+            member = RepositoryMember(
+                repo_id=repo.id,
+                user_id=demo_user.id,
+                role="developer",
+            )
+            db.add(member)
+            db.commit()
 
         if db.query(Issue).filter(Issue.repo_id == repo.id).count() == 0:
             issues = [

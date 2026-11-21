@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 from uuid import UUID
+from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy import or_
@@ -38,8 +39,10 @@ from app.db.models import (
     PullRequest,
     RecallEvent,
     Repository,
+    RepositoryMember,
     RetrievalTestRun,
     ThreadMemory,
+    User,
     WorkflowRun,
     Workspace,
 )
@@ -50,9 +53,27 @@ from app.schemas.repos import (
     RepoResponse,
     RepoSyncRequest,
     RepoSyncResponse,
+    RepositoryMemberCreateRequest,
+    RepositoryMemberResponse,
 )
 from app.core.config import settings
 from app.core.security import encrypt_token
+from app.services.permissions import (
+    check_repo_access,
+    ensure_demo_user,
+    filter_user_repositories,
+    get_current_user,
+    require_permission,
+    write_audit_log,
+)
+
+
+def _resolve_user(user: Any, db: Session) -> User:
+    if isinstance(user, User):
+        return user
+    return ensure_demo_user(db)
+
+
 from app.services.github.client import GitHubClient
 from app.services.code_analysis import sync_repository_code_analysis_by_id
 from app.services.rag.vector_store import delete_milvus_documents
@@ -216,8 +237,12 @@ def _clone_target_from_parent(raw_parent: str, repo_name: str) -> Path:
 
 @router.post("/connect", response_model=RepoConnectResponse)
 async def connect_repo(
-    payload: RepoConnectRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)
+    payload: RepoConnectRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permission("repo:sync")),
 ) -> RepoConnectResponse:
+    user = _resolve_user(user, db)
     local_path = _clean_text(payload.local_path)
     clone_parent_dir = _clean_text(payload.clone_parent_dir)
     owner = _clean_text(payload.owner)
@@ -280,8 +305,18 @@ async def connect_repo(
 
     repo = db.query(Repository).filter(Repository.full_name == full_name).one_or_none()
     if repo is None:
-        repo = Repository(owner=owner or "", name=repo_name or "", full_name=full_name)
+        repo = Repository(
+            owner=owner or "",
+            name=repo_name or "",
+            full_name=full_name,
+            created_by=user.id,
+            is_public=False,
+        )
         db.add(repo)
+        db.flush()
+        db.add(RepositoryMember(repo_id=repo.id, user_id=user.id, role="owner"))
+    else:
+        check_repo_access(db, user, repo.id, "repo:sync")
     repo.owner = owner or repo.owner
     repo.name = repo_name or repo.name
     repo.provider = provider
@@ -313,6 +348,15 @@ async def connect_repo(
         background_tasks.add_task(sync_repository_code_analysis_by_id, repo.id)
     elif fallback_message:
         background_tasks.add_task(sync_repository_code_analysis_by_id, repo.id)
+    write_audit_log(
+        db,
+        user=user,
+        repo_id=repo.id,
+        action="repo.connect",
+        target_type="repository",
+        target_id=str(repo.id),
+        request_json={"full_name": full_name, "provider": provider},
+    )
     return RepoConnectResponse(
         repo_id=repo.id,
         full_name=repo.full_name,
@@ -342,13 +386,22 @@ async def connect_repo(
 
 
 @router.get("", response_model=list[RepoResponse])
-async def list_repos(db: Session = Depends(get_db)) -> list[Repository]:
-    return (
-        db.query(Repository)
-        .filter(Repository.provider != "knowledge_base")
-        .order_by(Repository.updated_at.desc())
-        .all()
-    )
+async def list_repos(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> list[Repository]:
+    user = _resolve_user(user, db)
+    return filter_user_repositories(db, user)
+
+
+@router.get("/{repo_id}", response_model=RepoResponse)
+async def get_repo(
+    repo_id: UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> Repository:
+    user = _resolve_user(user, db)
+    return check_repo_access(db, user, repo_id, "repo:read")
 
 
 @router.post("/{repo_id}/sync", response_model=RepoSyncResponse)
@@ -357,30 +410,63 @@ async def sync_repo(
     payload: RepoSyncRequest,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
+    user: User = Depends(require_permission("repo:sync")),
 ) -> RepoSyncResponse:
-    repo = db.get(Repository, repo_id)
-    if repo is None:
-        raise HTTPException(status_code=404, detail="未找到仓库")
+    user = _resolve_user(user, db)
+    repo = check_repo_access(db, user, repo_id, "repo:sync")
     result = await sync_repository(db, repo, payload)
+    write_audit_log(
+        db,
+        user=user,
+        repo_id=repo.id,
+        action="repo.sync",
+        target_type="repository",
+        target_id=str(repo.id),
+        request_json=payload.model_dump(mode="json"),
+    )
     background_tasks.add_task(sync_repository_code_analysis_by_id, repo.id)
     return result
 
 
 @router.post("/{repo_id}/select")
-async def select_repo(repo_id: UUID, db: Session = Depends(get_db)) -> dict:
-    repo = db.get(Repository, repo_id)
-    if repo is None:
-        raise HTTPException(status_code=404, detail="未找到仓库")
+async def select_repo(
+    repo_id: UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    user = _resolve_user(user, db)
+    repo = check_repo_access(db, user, repo_id, "repo:read")
     repo.updated_at = datetime.now(timezone.utc)
     db.commit()
     return {"repo_id": str(repo.id), "full_name": repo.full_name, "selected": True}
 
 
 @router.delete("/{repo_id}")
-async def delete_repo(repo_id: UUID, db: Session = Depends(get_db)) -> dict:
+async def delete_repo(
+    repo_id: UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    user = _resolve_user(user, db)
     repo = db.get(Repository, repo_id)
     if repo is None:
         raise HTTPException(status_code=404, detail="未找到仓库")
+
+    is_admin = (user.role or "").lower() == "owner"
+    is_creator = repo.created_by and repo.created_by == user.id
+    is_repo_owner = False
+    member = (
+        db.query(RepositoryMember)
+        .filter(RepositoryMember.repo_id == repo.id, RepositoryMember.user_id == user.id)
+        .first()
+    )
+    if member and member.role.lower() == "owner":
+        is_repo_owner = True
+
+    if not (is_admin or is_creator or is_repo_owner):
+        raise HTTPException(
+            status_code=403, detail="无权删除该仓库，仅仓库所有者或系统管理员可操作"
+        )
 
     issue_ids = [item.id for item in db.query(Issue.id).filter(Issue.repo_id == repo.id).all()]
     pr_ids = [
@@ -517,11 +603,22 @@ async def delete_repo(repo_id: UUID, db: Session = Depends(get_db)) -> dict:
     db.query(Issue).filter(Issue.repo_id == repo.id).delete(synchronize_session=False)
     db.query(PullRequest).filter(PullRequest.repo_id == repo.id).delete(synchronize_session=False)
     db.query(WorkflowRun).filter(WorkflowRun.repo_id == repo.id).delete(synchronize_session=False)
+    db.query(RepositoryMember).filter(RepositoryMember.repo_id == repo.id).delete(
+        synchronize_session=False
+    )
     for workspace in db.query(Workspace).all():
         next_repo_ids = [item for item in (workspace.repo_ids or []) if str(item) != str(repo.id)]
         if next_repo_ids != (workspace.repo_ids or []):
             workspace.repo_ids = next_repo_ids
     db.delete(repo)
+    write_audit_log(
+        db,
+        user=user,
+        repo_id=None,
+        action="repo.delete",
+        target_type="repository",
+        target_id=str(repo.id),
+    )
     db.commit()
 
     milvus_deleted = delete_milvus_documents(repo_id=repo.id, strict=False)
@@ -547,13 +644,118 @@ async def delete_repo(repo_id: UUID, db: Session = Depends(get_db)) -> dict:
 
 
 @router.get("/{repo_id}/sync-status")
-async def sync_status(repo_id: UUID, db: Session = Depends(get_db)) -> dict:
-    repo = db.get(Repository, repo_id)
-    if repo is None:
-        raise HTTPException(status_code=404, detail="未找到仓库")
+async def sync_status(
+    repo_id: UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    user = _resolve_user(user, db)
+    repo = check_repo_access(db, user, repo_id, "repo:read")
     return {
         "repo_id": str(repo.id),
         "status": "completed" if repo.last_sync_at else "not_started",
         "last_sync_at": repo.last_sync_at,
         "message": "最近一次同步已成功完成。" if repo.last_sync_at else "仓库还没有同步过。",
     }
+
+
+@router.get("/{repo_id}/members", response_model=list[RepositoryMemberResponse])
+async def list_repo_members(
+    repo_id: UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> list[dict]:
+    user = _resolve_user(user, db)
+    repo = check_repo_access(db, user, repo_id, "repo:read")
+    members = db.query(RepositoryMember).filter(RepositoryMember.repo_id == repo.id).all()
+    results = []
+    for m in members:
+        u = db.get(User, m.user_id)
+        results.append(
+            {
+                "id": m.id,
+                "repo_id": m.repo_id,
+                "user_id": m.user_id,
+                "role": m.role,
+                "created_at": m.created_at,
+                "user_name": u.name if u else None,
+                "user_email": u.email if u else None,
+            }
+        )
+    return results
+
+
+@router.post("/{repo_id}/members", response_model=RepositoryMemberResponse)
+async def add_repo_member(
+    repo_id: UUID,
+    payload: RepositoryMemberCreateRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    user = _resolve_user(user, db)
+    repo = check_repo_access(db, user, repo_id, "settings:manage")
+    target_user = db.get(User, payload.user_id)
+    if target_user is None:
+        raise HTTPException(status_code=404, detail="未找到目标用户")
+    allowed_roles = {"maintainer", "developer", "viewer"}
+    role = payload.role.lower() if payload.role.lower() in allowed_roles else "developer"
+
+    member = (
+        db.query(RepositoryMember)
+        .filter(RepositoryMember.repo_id == repo.id, RepositoryMember.user_id == target_user.id)
+        .first()
+    )
+    if member is None:
+        member = RepositoryMember(repo_id=repo.id, user_id=target_user.id, role=role)
+        db.add(member)
+    else:
+        member.role = role
+    write_audit_log(
+        db,
+        user=user,
+        repo_id=repo.id,
+        action="repo.member_add",
+        target_type="user",
+        target_id=str(target_user.id),
+        request_json={"role": role},
+    )
+    db.commit()
+    db.refresh(member)
+    return {
+        "id": member.id,
+        "repo_id": member.repo_id,
+        "user_id": member.user_id,
+        "role": member.role,
+        "created_at": member.created_at,
+        "user_name": target_user.name,
+        "user_email": target_user.email,
+    }
+
+
+@router.delete("/{repo_id}/members/{user_id}")
+async def remove_repo_member(
+    repo_id: UUID,
+    user_id: UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    user = _resolve_user(user, db)
+    repo = check_repo_access(db, user, repo_id, "settings:manage")
+    member = (
+        db.query(RepositoryMember)
+        .filter(RepositoryMember.repo_id == repo.id, RepositoryMember.user_id == user_id)
+        .first()
+    )
+    if member is None:
+        raise HTTPException(status_code=404, detail="未找到该成员")
+    db.delete(member)
+    write_audit_log(
+        db,
+        user=user,
+        repo_id=repo.id,
+        action="repo.member_remove",
+        target_type="user",
+        target_id=str(user_id),
+    )
+    db.commit()
+    return {"repo_id": str(repo_id), "user_id": str(user_id), "removed": True}

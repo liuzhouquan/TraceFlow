@@ -7,6 +7,7 @@ from sqlalchemy import inspect, text
 
 from app.api.routes import (
     action_drafts,
+    auth,
     chat,
     ci,
     code_graph,
@@ -61,6 +62,7 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
     app.include_router(repos.router, prefix="/api/repos", tags=["repos"])
     app.include_router(conversations.router, prefix="/api/repos", tags=["conversations"])
     app.include_router(workspaces.router, prefix="/api/workspaces", tags=["workspaces"])
@@ -91,14 +93,32 @@ def create_app() -> FastAPI:
         inspector = inspect(engine)
         if "users" in inspector.get_table_names():
             columns = {column["name"] for column in inspector.get_columns("users")}
-            if "role" not in columns:
-                with engine.begin() as connection:
+            with engine.begin() as connection:
+                if "role" not in columns:
                     connection.execute(
                         text("ALTER TABLE users ADD COLUMN role VARCHAR(80) DEFAULT 'owner'")
                     )
+                if "email" not in columns:
+                    connection.execute(text("ALTER TABLE users ADD COLUMN email VARCHAR(255)"))
+                if "hashed_password" not in columns:
+                    connection.execute(
+                        text("ALTER TABLE users ADD COLUMN hashed_password VARCHAR(255)")
+                    )
+                if "is_active" not in columns:
+                    connection.execute(
+                        text("ALTER TABLE users ADD COLUMN is_active BOOLEAN DEFAULT 1")
+                    )
+                if "updated_at" not in columns:
+                    connection.execute(text("ALTER TABLE users ADD COLUMN updated_at TIMESTAMP"))
         if "repositories" in inspector.get_table_names():
             columns = {column["name"] for column in inspector.get_columns("repositories")}
             with engine.begin() as connection:
+                if "created_by" not in columns:
+                    connection.execute(text("ALTER TABLE repositories ADD COLUMN created_by UUID"))
+                if "is_public" not in columns:
+                    connection.execute(
+                        text("ALTER TABLE repositories ADD COLUMN is_public BOOLEAN DEFAULT 0")
+                    )
                 if "provider" not in columns:
                     connection.execute(
                         text(

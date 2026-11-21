@@ -1510,9 +1510,7 @@ class ChatAgent(BaseAgent):
             raw_suffixes = context.get("skill_description_by_tool") or {}
             if isinstance(raw_suffixes, dict):
                 suffixes = raw_suffixes
-        return (
-            f"公开工具：{name}。{descriptions.get(name, 'TraceFlow 工具。')}{suffixes.get(name, '')}"
-        )
+        return f"公开工具：{name}。{descriptions.get(name, 'TraceFlow 工具。')}{suffixes.get(name, '')}"
 
     def _tool_help(self, state: ConversationState) -> str:
         tools = state.get("tools") or {}

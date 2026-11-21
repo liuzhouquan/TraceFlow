@@ -83,6 +83,10 @@ class Settings(BaseSettings):
     upload_dir: str = ".data/uploads"
 
     token_encryption_key: str = "change-me-in-local-dev"
+    jwt_secret_key: str = "traceflow-jwt-secret-key-change-in-production"
+    jwt_algorithm: str = "HS256"
+    jwt_access_token_expire_minutes: int = 1440
+    auth_required: bool = False
     demo_mode: bool = True
     github_webhook_secret: str | None = None
     feishu_feedback_webhook_url: str | None = None

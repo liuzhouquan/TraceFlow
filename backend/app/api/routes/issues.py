@@ -1,21 +1,30 @@
 import asyncio
 import json
 from collections.abc import AsyncIterator
+from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-from app.db.models import AnalysisResult, Conversation, Document, Issue, Repository
+from app.db.models import AnalysisResult, Conversation, Document, Issue, Repository, User
 from app.db.session import get_db
 from app.schemas.issues import IssueAnalysisResponse, IssueResponse
 from app.services.agents.issue_agent import IssueAgent
 from app.services.chat_memory import ContextAssembler
 from app.services.code_search import search_repository_code
+from app.services.permissions import check_repo_access, ensure_demo_user, get_current_user
 from app.services.rag.retrieval import search_similar_documents
 
 router = APIRouter()
+
+
+def _resolve_user(user: Any, db: Session) -> User:
+    if isinstance(user, User):
+        return user
+    return ensure_demo_user(db)
+
 
 PROJECT_DOC_TYPES = {"knowledge_file", "memory_note", "project_doc"}
 PUBLIC_REASONING_PROMPT = """
@@ -325,15 +334,27 @@ async def _issue_analysis_sse(
 
 
 @router.get("/repos/{repo_id}/issues", response_model=list[IssueResponse])
-async def list_issues(repo_id: UUID, db: Session = Depends(get_db)) -> list[Issue]:
+async def list_issues(
+    repo_id: UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> list[Issue]:
+    user = _resolve_user(user, db)
+    check_repo_access(db, user, repo_id, "repo:read")
     return db.query(Issue).filter(Issue.repo_id == repo_id).order_by(Issue.number.desc()).all()
 
 
 @router.get("/issues/{issue_id}", response_model=IssueResponse)
-async def get_issue(issue_id: UUID, db: Session = Depends(get_db)) -> Issue:
+async def get_issue(
+    issue_id: UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> Issue:
+    user = _resolve_user(user, db)
     issue = db.get(Issue, issue_id)
     if issue is None:
         raise HTTPException(status_code=404, detail="未找到 Issue")
+    check_repo_access(db, user, issue.repo_id, "repo:read")
     return issue
 
 
@@ -342,10 +363,13 @@ async def analyze_issue(
     issue_id: UUID,
     conversation_id: UUID | None = Query(default=None),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> IssueAnalysisResponse:
+    user = _resolve_user(user, db)
     issue = db.get(Issue, issue_id)
     if issue is None:
         raise HTTPException(status_code=404, detail="未找到 Issue")
+    check_repo_access(db, user, issue.repo_id, "agent:run")
     agent = IssueAgent()
     _query, context, counts = _build_issue_analysis_context(db, issue, conversation_id)
     result = await agent.run(_issue_payload(issue), context)
@@ -358,7 +382,13 @@ async def analyze_issue_stream(
     issue_id: UUID,
     conversation_id: UUID | None = Query(default=None),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> StreamingResponse:
+    user = _resolve_user(user, db)
+    issue = db.get(Issue, issue_id)
+    if issue is None:
+        raise HTTPException(status_code=404, detail="未找到 Issue")
+    check_repo_access(db, user, issue.repo_id, "agent:run")
     return StreamingResponse(
         _issue_analysis_sse(issue_id, conversation_id, db), media_type="text/event-stream"
     )
