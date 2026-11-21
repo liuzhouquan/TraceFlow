@@ -243,3 +243,41 @@ def test_baseline_legacy_database_adoption_and_upgrade(tmp_path):
         version = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
         assert version == "0002_auth_and_isolation"
     mig_engine.dispose()
+
+
+def test_partial_legacy_database_missing_users_updated_at_rejected(tmp_path):
+    from app.db.models import Base
+    from app.db.migration import run_migrations
+
+    test_db = tmp_path / "missing_updated_at.db"
+    db_url = f"sqlite+pysqlite:///{test_db}"
+
+    # 创建完整的 0002 表结构，然后删除 users.updated_at 字段
+    engine = create_engine(db_url)
+    Base.metadata.create_all(engine)
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE users DROP COLUMN updated_at"))
+    engine.dispose()
+
+    # 验证不完整的存量结构严格拒绝，阻止破坏性 stamp
+    with pytest.raises(RuntimeError, match="检测到不完整的存量数据库结构.*users 列缺失"):
+        run_migrations(db_url)
+
+
+def test_partial_legacy_database_missing_documents_table_rejected(tmp_path):
+    from app.db.models import Base
+    from app.db.migration import run_migrations
+
+    test_db = tmp_path / "missing_documents.db"
+    db_url = f"sqlite+pysqlite:///{test_db}"
+
+    # 创建完整的 0002 表结构，然后删除 documents 业务表
+    engine = create_engine(db_url)
+    Base.metadata.create_all(engine)
+    with engine.begin() as conn:
+        conn.execute(text("DROP TABLE documents"))
+    engine.dispose()
+
+    # 验证缺失 documents 表被严格拒绝
+    with pytest.raises(RuntimeError, match="检测到不完整的存量数据库结构.*表缺失"):
+        run_migrations(db_url)

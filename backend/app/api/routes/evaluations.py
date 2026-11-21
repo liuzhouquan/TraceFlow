@@ -86,7 +86,18 @@ async def run_eval(
     u = resolve_user(_user, db)
     if payload.repo_id:
         check_repo_access(db, u, payload.repo_id, "eval:read")
+    elif (u.role or "").lower() not in ("owner", "maintainer"):
+        raise HTTPException(
+            status_code=400,
+            detail="非管理员用户运行评测必须指定 repo_id",
+        )
     result = await run_basic_eval(db, str(payload.repo_id) if payload.repo_id else None)
+    if payload.repo_id:
+        result["repo_id"] = str(payload.repo_id)
+        if "target" not in result or not isinstance(result["target"], dict):
+            result["target"] = {}
+        result["target"]["repo_id"] = str(payload.repo_id)
+        result["target"]["name"] = result["target"].get("name") or "BasicEval"
     eval_run = EvalRun(name=payload.name, result_json=result)
     db.add(eval_run)
     db.commit()
@@ -229,6 +240,11 @@ async def _execute_rag_eval_job(
     try:
         eval_run = db.get(EvalRun, UUID(eval_id))
         if eval_run is not None:
+            if repo_id:
+                result["repo_id"] = repo_id
+                if "target" not in result or not isinstance(result["target"], dict):
+                    result["target"] = {}
+                result["target"]["repo_id"] = repo_id
             eval_run.result_json = result
             db.add(eval_run)
             db.commit()
@@ -252,6 +268,7 @@ def _job_result(
         "quality_status": "incomplete",
         "evaluation_complete": False,
         "passed": False,
+        "repo_id": repo_id,
         "target": {"name": "ChatAgent", "repo_id": repo_id} if repo_id else {"name": "ChatAgent"},
         "evaluation_set": evaluation_set or {},
         "progress": {
@@ -261,6 +278,42 @@ def _job_result(
             **progress,
         },
     }
+
+
+def get_eval_repo_id(eval_run: EvalRun) -> UUID | None:
+    result = eval_run.result_json or {}
+    raw_repo_id = result.get("repo_id") or (result.get("target") or {}).get("repo_id")
+    if not raw_repo_id:
+        return None
+    try:
+        return UUID(str(raw_repo_id))
+    except (ValueError, TypeError):
+        return None
+
+
+def check_eval_access(
+    db: Session,
+    user: User,
+    eval_run: EvalRun,
+    required_permission: str = "eval:read",
+) -> UUID | None:
+    """验证用户对指定 EvalRun 的仓库访问权限。
+
+    Fail-Closed 原则：
+    1. 若评测记录关联了 repo_id，严格调用 check_repo_access 检验该仓库的权限；
+    2. 若评测记录未关联 repo_id（或为历史无作用域/模糊数据），仅允许 owner/maintainer 访问；
+       普通用户（developer / viewer 等）拒绝访问并返回 403，防止私有评测或未隔离数据越权泄露。
+    """
+    repo_id = get_eval_repo_id(eval_run)
+    if repo_id is not None:
+        check_repo_access(db, user, repo_id, required_permission)
+        return repo_id
+    if (user.role or "").lower() in ("owner", "maintainer"):
+        return None
+    raise HTTPException(
+        status_code=403,
+        detail="无权访问未明确关联仓库的评测记录（仅管理员可见）",
+    )
 
 
 @router.post("/{eval_id}/rescore", response_model=EvalRunResponse)
@@ -273,6 +326,9 @@ async def rescore_eval(
     source = db.get(EvalRun, eval_id)
     if source is None:
         raise HTTPException(status_code=404, detail="未找到 Eval run")
+    u = resolve_user(_user, db)
+    # 鉴权：严格校验用户对 source eval 所在仓库的访问权限，未授权直接 403 阻断
+    repo_id_uuid = check_eval_access(db, u, source, "eval:read")
     source_result = source.result_json or {}
     if not source_result.get("cases"):
         raise HTTPException(status_code=400, detail="原评测没有可用于重评分的逐题现场")
@@ -292,7 +348,11 @@ async def rescore_eval(
     )
     if error_count == 0 and missing_count == 0:
         raise HTTPException(status_code=400, detail="原评测没有失败或缺失的 Judge 指标")
-    repo_id = str((source_result.get("target") or {}).get("repo_id") or "")
+    repo_id = (
+        str(repo_id_uuid)
+        if repo_id_uuid
+        else str((source_result.get("target") or {}).get("repo_id") or "")
+    )
     evaluation_set = dict(source_result.get("evaluation_set") or {})
     queued = _job_result(
         status="queued",
@@ -302,6 +362,8 @@ async def rescore_eval(
         evaluation_set=evaluation_set,
         rescore_of=str(eval_id),
     )
+    if repo_id:
+        queued["repo_id"] = repo_id
     target = EvalRun(name=f"rescore-{source.name}", result_json=queued)
     db.add(target)
     db.commit()
@@ -376,6 +438,11 @@ async def _execute_rescore_job(
     try:
         row = db.get(EvalRun, UUID(target_eval_id))
         if row is not None:
+            if repo_id:
+                result["repo_id"] = repo_id
+                if "target" not in result or not isinstance(result["target"], dict):
+                    result["target"] = {}
+                result["target"]["repo_id"] = repo_id
             row.result_json = result
             db.add(row)
             db.commit()
@@ -470,6 +537,10 @@ async def compare_evals(
     candidate = db.get(EvalRun, candidate_eval_id)
     if base is None or candidate is None:
         raise HTTPException(status_code=404, detail="未找到用于对比的 Eval run")
+    u = resolve_user(_user, db)
+    # 鉴权：严格校验对比双方的仓库访问权限
+    check_eval_access(db, u, base, "eval:read")
+    check_eval_access(db, u, candidate, "eval:read")
     return _eval_comparison(base, candidate)
 
 
@@ -545,17 +616,14 @@ async def create_eval_issue_draft(
     eval_run = db.get(EvalRun, eval_id)
     if eval_run is None:
         raise HTTPException(status_code=404, detail="未找到 Eval run")
-    result = eval_run.result_json or {}
-    repo_id = (result.get("target") or {}).get("repo_id")
-    if not repo_id:
-        raise HTTPException(
-            status_code=400, detail="该历史评测没有保存仓库信息，无法创建 Issue 草稿"
-        )
-    repo = db.get(Repository, UUID(str(repo_id)))
+    u = resolve_user(user, db)
+    repo_id_uuid = check_eval_access(db, u, eval_run, "draft:create")
+    if not repo_id_uuid:
+        raise HTTPException(status_code=400, detail="该评测未明确关联仓库，无法创建 Issue 草稿")
+    repo = db.get(Repository, repo_id_uuid)
     if repo is None:
         raise HTTPException(status_code=404, detail="未找到评测对应仓库")
-    u = resolve_user(user, db)
-    check_repo_access(db, u, repo.id, "draft:create")
+    result = eval_run.result_json or {}
     suite_label = (result.get("evaluation_set") or {}).get("label") or "RAGAS"
     title = payload.title or f"RAG 质量回归：{suite_label} 未通过"
     draft = ActionDraft(
@@ -595,13 +663,8 @@ async def list_evals(
         check_repo_access(db, u, repo_id, "eval:read")
     rows = db.query(EvalRun).order_by(EvalRun.created_at.desc()).limit(100).all()
     if repo_id is not None:
-        rows = [
-            row
-            for row in rows
-            if str(((row.result_json or {}).get("target") or {}).get("repo_id") or "")
-            == str(repo_id)
-        ]
-    elif u.role not in ("owner", "maintainer"):
+        rows = [row for row in rows if str(get_eval_repo_id(row) or "") == str(repo_id)]
+    elif (u.role or "").lower() not in ("owner", "maintainer"):
         accessible_repos = (
             db.query(Repository.id)
             .filter(
@@ -616,13 +679,8 @@ async def list_evals(
             .all()
         )
         accessible_ids = {str(r[0]) for r in accessible_repos}
-        rows = [
-            row
-            for row in rows
-            if str(((row.result_json or {}).get("target") or {}).get("repo_id") or "")
-            in accessible_ids
-            or ((row.result_json or {}).get("target") or {}).get("repo_id") is None
-        ]
+        # 仅返回用户有权访问的仓库关联评测；无作用域 (None) 评测对非管理员完全隐蔽
+        rows = [row for row in rows if str(get_eval_repo_id(row) or "") in accessible_ids]
     rows = rows[: max(1, min(limit, 100))]
     return [
         {
@@ -651,13 +709,8 @@ async def get_eval(
     eval_run = db.get(EvalRun, eval_uuid)
     if eval_run is None:
         raise HTTPException(status_code=404, detail="未找到 Eval run")
+    check_eval_access(db, u, eval_run, "eval:read")
     result = eval_run.result_json or {}
-    target_repo = (result.get("target") or {}).get("repo_id")
-    if target_repo:
-        try:
-            check_repo_access(db, u, UUID(str(target_repo)), "eval:read")
-        except (ValueError, TypeError):
-            pass
     return {
         "eval_id": str(eval_run.id),
         "name": eval_run.name,

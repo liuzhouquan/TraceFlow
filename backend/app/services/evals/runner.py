@@ -262,6 +262,10 @@ async def run_basic_eval(db: Session | None = None, repo_id: str | None = None) 
         }
 
     return {
+        "target": {"name": "BasicEval", "repo_id": str(repo_id)}
+        if repo_id
+        else {"name": "BasicEval"},
+        "repo_id": str(repo_id) if repo_id else None,
         "issue_classification_accuracy": round(issue_accuracy, 4),
         "pr_key_file_coverage": round(pr_key_file_coverage, 4),
         "rag_hit_rate_at_3": round(rag_hit_rate_at_3, 4),

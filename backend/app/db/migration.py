@@ -8,37 +8,81 @@ from alembic.config import Config
 from sqlalchemy import create_engine, inspect
 
 from app.core.config import settings
+from app.db.models import Base
 
 logger = logging.getLogger(__name__)
 
 
 def _inspect_and_adopt_legacy_database(inspector, alembic_cfg: Config) -> None:
-    table_names = set(inspector.get_table_names())
-    if "users" not in table_names or "alembic_version" in table_names:
+    raw_tables = set(inspector.get_table_names())
+    user_tables = raw_tables - {"sqlite_sequence", "alembic_version"}
+
+    # 1. 全新空库：交给 alembic 从头初始化升级
+    if not user_tables:
         return
 
-    user_cols = {c["name"] for c in inspector.get_columns("users")}
-    repo_cols = (
-        {c["name"] for c in inspector.get_columns("repositories")}
-        if "repositories" in table_names
-        else set()
-    )
+    # 2. 已由 Alembic 纳管的库：直接跳过纳管逻辑
+    if "alembic_version" in raw_tables:
+        return
 
-    req_0002_user_cols = {"email", "hashed_password", "is_active"}
-    req_0002_repo_cols = {"created_by", "is_public"}
-    has_0002_table = "repository_members" in table_names
+    expected_0002_tables = set(Base.metadata.tables.keys())
+    expected_0001_tables = expected_0002_tables - {"repository_members"}
 
-    is_full_0002 = (
-        has_0002_table
-        and req_0002_user_cols.issubset(user_cols)
-        and req_0002_repo_cols.issubset(repo_cols)
-    )
+    user_cols_0002_additions = {"email", "hashed_password", "is_active", "updated_at"}
+    repo_cols_0002_additions = {"created_by", "is_public"}
 
-    is_baseline_0001 = (
-        not has_0002_table
-        and req_0002_user_cols.isdisjoint(user_cols)
-        and req_0002_repo_cols.isdisjoint(repo_cols)
-    )
+    existing_columns = {t: {c["name"] for c in inspector.get_columns(t)} for t in user_tables}
+
+    # 检查 0002 完整性
+    missing_0002_tables = expected_0002_tables - user_tables
+    missing_0002_columns: dict[str, set[str]] = {}
+    if not missing_0002_tables:
+        for t in expected_0002_tables:
+            req_cols = {c.name for c in Base.metadata.tables[t].columns}
+            missing = req_cols - existing_columns.get(t, set())
+            if missing:
+                missing_0002_columns[t] = missing
+
+    # 检查 repository_members 外键约束完整性
+    has_0002_fks = True
+    if "repository_members" in user_tables:
+        raw_fks = inspector.get_foreign_keys("repository_members")
+        if raw_fks:
+            referred_tables = {
+                fk.get("referred_table") for fk in raw_fks if fk.get("referred_table")
+            }
+            has_0002_fks = {"repositories", "users"}.issubset(referred_tables)
+
+    is_full_0002 = not missing_0002_tables and not missing_0002_columns and has_0002_fks
+
+    # 检查 0001 基线完整性
+    is_baseline_0001 = False
+    if "repository_members" not in user_tables and expected_0001_tables.issubset(user_tables):
+        users_actual = existing_columns.get("users", set())
+        users_0001_req = {
+            c.name for c in Base.metadata.tables["users"].columns
+        } - user_cols_0002_additions
+        users_0001_ok = users_0001_req.issubset(
+            users_actual
+        ) and user_cols_0002_additions.isdisjoint(users_actual)
+
+        repos_actual = existing_columns.get("repositories", set())
+        repos_0001_req = {
+            c.name for c in Base.metadata.tables["repositories"].columns
+        } - repo_cols_0002_additions
+        repos_0001_ok = repos_0001_req.issubset(
+            repos_actual
+        ) and repo_cols_0002_additions.isdisjoint(repos_actual)
+
+        other_tables_ok = all(
+            {c.name for c in Base.metadata.tables[t].columns}.issubset(
+                existing_columns.get(t, set())
+            )
+            for t in expected_0001_tables
+            if t not in ("users", "repositories")
+        )
+
+        is_baseline_0001 = users_0001_ok and repos_0001_ok and other_tables_ok
 
     if is_full_0002:
         logger.info("检测到结构完整且已包含认证隔离的存量数据库，自动标记版本为 head...")
@@ -47,15 +91,31 @@ def _inspect_and_adopt_legacy_database(inspector, alembic_cfg: Config) -> None:
         logger.info("检测到未迁移的完整存量基线数据库，自动标记版本为 0001_initial...")
         command.stamp(alembic_cfg, "0001_initial")
     else:
-        missing_parts = []
-        if not has_0002_table:
-            missing_parts.append("表 repository_members 缺失")
-        if not req_0002_user_cols.issubset(user_cols):
-            missing_parts.append(f"users 列缺失: {req_0002_user_cols - user_cols}")
-        if not req_0002_repo_cols.issubset(repo_cols):
-            missing_parts.append(f"repositories 列缺失: {req_0002_repo_cols - repo_cols}")
+        reasons = []
+        if missing_0002_tables:
+            reasons.append(f"表缺失: {sorted(missing_0002_tables)}")
+        if missing_0002_columns:
+            for t, cols in sorted(missing_0002_columns.items()):
+                reasons.append(f"{t} 列缺失: {sorted(cols)}")
+        if not has_0002_fks and "repository_members" in user_tables:
+            reasons.append("repository_members 外键约束缺失")
+        if "users" in user_tables:
+            u_cols = existing_columns.get("users", set())
+            overlap = u_cols & user_cols_0002_additions
+            if overlap and not user_cols_0002_additions.issubset(u_cols):
+                reasons.append(
+                    f"users 认证扩展字段不完整（缺失: {sorted(user_cols_0002_additions - u_cols)}）"
+                )
+        if "repositories" in user_tables:
+            r_cols = existing_columns.get("repositories", set())
+            overlap = r_cols & repo_cols_0002_additions
+            if overlap and not repo_cols_0002_additions.issubset(r_cols):
+                reasons.append(
+                    f"repositories 隔离扩展字段不完整（缺失: {sorted(repo_cols_0002_additions - r_cols)}）"
+                )
+        detail = "; ".join(reasons) if reasons else "非标准或混合状态存量结构"
         raise RuntimeError(
-            f"检测到不完整的存量数据库结构（{', '.join(missing_parts)}），无法安全自动纳管，拒绝启动以防止数据状态损坏。"
+            f"检测到不完整的存量数据库结构（{detail}），无法安全自动纳管，拒绝启动以防止数据状态损坏。"
         )
 
 

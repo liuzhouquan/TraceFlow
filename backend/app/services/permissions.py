@@ -144,7 +144,7 @@ def check_repo_access(
         return repo
 
     # 4. 公开仓库只读访问
-    if required_permission == "repo:read" and getattr(repo, "is_public", False):
+    if required_permission in ("repo:read", "eval:read") and getattr(repo, "is_public", False):
         return repo
 
     raise HTTPException(status_code=403, detail="无权访问该仓库")

@@ -41,10 +41,12 @@ def perm_db_session(tmp_path):
 def perm_client(perm_db_session, monkeypatch):
     import app.main as main_mod
     import app.db.session as sess_mod
+    import app.api.routes.evaluations as eval_mod
 
     test_engine = perm_db_session.get_bind()
     monkeypatch.setattr(main_mod, "engine", test_engine)
     monkeypatch.setattr(sess_mod, "SessionLocal", sessionmaker(bind=test_engine))
+    monkeypatch.setattr(eval_mod, "SessionLocal", sessionmaker(bind=test_engine))
     app = create_app()
 
     def override_get_db():
@@ -646,3 +648,204 @@ def test_unrelated_developer_and_viewer_cross_repo_isolation(
     )
     assert resp_cancel_alice.status_code == 200
     assert resp_cancel_alice.json()["status"] == "cancelled"
+
+
+def test_evaluations_authorization_and_isolation(perm_client, perm_db_session, monkeypatch):
+    import uuid
+    import app.api.routes.evaluations as eval_routes
+    from app.db.models import EvalRun
+
+    # 1. 准备用户和私有仓库
+    user_alice = User(
+        name="alice_eval",
+        email="alice_eval@example.com",
+        role="developer",
+        hashed_password=hash_password("Pass123!"),
+    )
+    user_bob = User(
+        name="bob_eval",
+        email="bob_eval@example.com",
+        role="developer",
+        hashed_password=hash_password("Pass123!"),
+    )
+    user_admin = User(
+        name="admin_eval",
+        email="admin_eval@example.com",
+        role="owner",
+        hashed_password=hash_password("Pass123!"),
+    )
+    perm_db_session.add_all([user_alice, user_bob, user_admin])
+    perm_db_session.commit()
+
+    repo_alice = Repository(
+        owner="alice",
+        name="private-eval-repo",
+        full_name="alice/private-eval-repo",
+        created_by=user_alice.id,
+        is_public=False,
+    )
+    perm_db_session.add(repo_alice)
+    perm_db_session.commit()
+
+    token_alice = create_access_token(data={"sub": str(user_alice.id), "role": "developer"})
+    token_bob = create_access_token(data={"sub": str(user_bob.id), "role": "developer"})
+    token_admin = create_access_token(data={"sub": str(user_admin.id), "role": "owner"})
+
+    # Mock 外部 evaluator 与后台任务，避免真实执行模型或向量检索
+    async def fake_basic_eval(db, repo_id=None):
+        return {
+            "target": {"name": "BasicEval", "repo_id": str(repo_id)}
+            if repo_id
+            else {"name": "BasicEval"},
+            "repo_id": str(repo_id) if repo_id else None,
+            "issue_classification_accuracy": 0.95,
+            "tool_call_accuracy": 0.98,
+        }
+
+    async def fake_rescore_job(*args, **kwargs):
+        pass
+
+    monkeypatch.setattr(eval_routes, "run_basic_eval", fake_basic_eval)
+    monkeypatch.setattr(eval_routes, "_execute_rescore_job", fake_rescore_job)
+
+    # 2. 非管理员运行未绑定 repo_id 的评测必须拒绝 (HTTP 400)
+    resp_no_repo = perm_client.post(
+        "/api/evals/run",
+        json={"name": "unscoped_run"},
+        headers={"Authorization": f"Bearer {token_bob}"},
+    )
+    assert resp_no_repo.status_code == 400
+    assert "必须指定 repo_id" in resp_no_repo.json()["detail"]
+
+    # 3. 无关开发者 Bob 尝试在 Alice 私有仓库运行评测：拦截 403
+    resp_run_bob = perm_client.post(
+        "/api/evals/run",
+        json={"name": "bob_probe", "repo_id": str(repo_alice.id)},
+        headers={"Authorization": f"Bearer {token_bob}"},
+    )
+    assert resp_run_bob.status_code == 403
+
+    # 4. Alice 成功运行评测，且结果中持久化了作用域 repo_id 与 target.repo_id
+    resp_run_alice = perm_client.post(
+        "/api/evals/run",
+        json={"name": "alice_eval", "repo_id": str(repo_alice.id)},
+        headers={"Authorization": f"Bearer {token_alice}"},
+    )
+    assert resp_run_alice.status_code == 200
+    eval_id_alice = resp_run_alice.json()["eval_id"]
+    eval_row = perm_db_session.get(EvalRun, uuid.UUID(eval_id_alice))
+    assert eval_row is not None
+    assert eval_row.result_json.get("repo_id") == str(repo_alice.id)
+    assert (eval_row.result_json.get("target") or {}).get("repo_id") == str(repo_alice.id)
+
+    # 5. Bob 查看评测列表不应看到 Alice 的私有评测
+    resp_list_bob = perm_client.get(
+        "/api/evals",
+        headers={"Authorization": f"Bearer {token_bob}"},
+    )
+    assert resp_list_bob.status_code == 200
+    bob_eval_ids = [item["eval_id"] for item in resp_list_bob.json()]
+    assert eval_id_alice not in bob_eval_ids
+
+    # 6. Bob 直接查询 Alice 的评测详情：严格拦截 403
+    resp_get_bob = perm_client.get(
+        f"/api/evals/{eval_id_alice}",
+        headers={"Authorization": f"Bearer {token_bob}"},
+    )
+    assert resp_get_bob.status_code == 403
+
+    # 7. Alice 和 Admin 均可正常查看该评测
+    resp_get_alice = perm_client.get(
+        f"/api/evals/{eval_id_alice}",
+        headers={"Authorization": f"Bearer {token_alice}"},
+    )
+    assert resp_get_alice.status_code == 200
+    assert resp_get_alice.json()["eval_id"] == eval_id_alice
+
+    resp_get_admin = perm_client.get(
+        f"/api/evals/{eval_id_alice}",
+        headers={"Authorization": f"Bearer {token_admin}"},
+    )
+    assert resp_get_admin.status_code == 200
+
+    # 8. 评测对比 (compare) 权限验证：Bob 尝试对比 Alice 的评测被拦截 403
+    eval_run_alice_2 = EvalRun(
+        name="alice_eval_2",
+        result_json={
+            "repo_id": str(repo_alice.id),
+            "target": {"name": "ChatAgent", "repo_id": str(repo_alice.id)},
+            "summary_metrics": {"faithfulness": 0.8},
+            "evaluation_set": {"sha256": "abc"},
+        },
+    )
+    perm_db_session.add(eval_run_alice_2)
+    perm_db_session.commit()
+
+    resp_compare_bob = perm_client.get(
+        f"/api/evals/compare?base_eval_id={eval_id_alice}&candidate_eval_id={eval_run_alice_2.id}",
+        headers={"Authorization": f"Bearer {token_bob}"},
+    )
+    assert resp_compare_bob.status_code == 403
+
+    resp_compare_alice = perm_client.get(
+        f"/api/evals/compare?base_eval_id={eval_id_alice}&candidate_eval_id={eval_run_alice_2.id}",
+        headers={"Authorization": f"Bearer {token_alice}"},
+    )
+    assert resp_compare_alice.status_code == 200
+
+    # 9. 评测重评分 (rescore) 权限验证：Bob 尝试重评分 Alice 的评测被拦截 403，不得创建任务
+    eval_with_error = EvalRun(
+        name="alice_rescore_source",
+        result_json={
+            "repo_id": str(repo_alice.id),
+            "target": {"name": "ChatAgent", "repo_id": str(repo_alice.id)},
+            "cases": [
+                {
+                    "id": "c1",
+                    "ragas_errors": [{"metric": "faithfulness", "error": "timeout"}],
+                }
+            ],
+        },
+    )
+    perm_db_session.add(eval_with_error)
+    perm_db_session.commit()
+
+    initial_eval_count = perm_db_session.query(EvalRun).count()
+    resp_rescore_bob = perm_client.post(
+        f"/api/evals/{eval_with_error.id}/rescore",
+        headers={"Authorization": f"Bearer {token_bob}"},
+    )
+    assert resp_rescore_bob.status_code == 403
+    assert perm_db_session.query(EvalRun).count() == initial_eval_count  # 未越权创建任务
+
+    resp_rescore_alice = perm_client.post(
+        f"/api/evals/{eval_with_error.id}/rescore",
+        headers={"Authorization": f"Bearer {token_alice}"},
+    )
+    assert resp_rescore_alice.status_code == 200
+    assert resp_rescore_alice.json()["status"] == "queued"
+
+    # 10. 历史无作用域/模糊数据严格防泄漏 (Fail-Closed)
+    unscoped_eval = EvalRun(
+        name="legacy_unscoped_eval",
+        result_json={"summary_metrics": {"accuracy": 0.5}},
+    )
+    perm_db_session.add(unscoped_eval)
+    perm_db_session.commit()
+
+    # 普通开发者 Bob 列表看不到无作用域评测，且直接查询返回 403
+    resp_list_bob2 = perm_client.get("/api/evals", headers={"Authorization": f"Bearer {token_bob}"})
+    assert str(unscoped_eval.id) not in [item["eval_id"] for item in resp_list_bob2.json()]
+
+    resp_get_unscoped_bob = perm_client.get(
+        f"/api/evals/{unscoped_eval.id}",
+        headers={"Authorization": f"Bearer {token_bob}"},
+    )
+    assert resp_get_unscoped_bob.status_code == 403
+
+    # 管理员 Admin 可以正常查看无作用域历史评测
+    resp_get_unscoped_admin = perm_client.get(
+        f"/api/evals/{unscoped_eval.id}",
+        headers={"Authorization": f"Bearer {token_admin}"},
+    )
+    assert resp_get_unscoped_admin.status_code == 200
