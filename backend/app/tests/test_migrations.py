@@ -227,6 +227,10 @@ def test_baseline_legacy_database_adoption_and_upgrade(tmp_path):
     engine = create_engine(db_url)
     with engine.begin() as conn:
         conn.execute(text("DROP TABLE alembic_version"))
+        conn.execute(
+            text("INSERT INTO users (id, name, role) VALUES (:id, :name, :role)"),
+            {"id": "1" * 32, "name": "legacy-owner", "role": "owner"},
+        )
     engine.dispose()
 
     # 调用 run_migrations：应自动探测为 0001_initial，并平滑升级至 head
@@ -242,6 +246,8 @@ def test_baseline_legacy_database_adoption_and_upgrade(tmp_path):
     with mig_engine.connect() as conn:
         version = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
         assert version == "0002_auth_and_isolation"
+        row = conn.execute(text("SELECT name, role, is_active FROM users")).one()
+        assert tuple(row) == ("legacy-owner", "owner", 1)
     mig_engine.dispose()
 
 
@@ -281,3 +287,51 @@ def test_partial_legacy_database_missing_documents_table_rejected(tmp_path):
     # 验证缺失 documents 表被严格拒绝
     with pytest.raises(RuntimeError, match="检测到不完整的存量数据库结构.*表缺失"):
         run_migrations(db_url)
+
+
+@pytest.mark.parametrize(
+    ("table_name", "damage"),
+    [
+        ("repository_members", "missing_all"),
+        ("repository_members", "wrong_columns"),
+        ("repository_members", "missing_one"),
+        ("workflow_runs", "missing_all"),
+    ],
+)
+def test_legacy_adoption_rejects_invalid_foreign_keys_without_stamp(tmp_path, table_name, damage):
+    from sqlalchemy import ForeignKeyConstraint, MetaData
+    from app.db.migration import run_migrations
+    from app.db.models import Base
+
+    metadata = MetaData()
+    for table in Base.metadata.sorted_tables:
+        table.to_metadata(metadata)
+    table = metadata.tables[table_name]
+    for constraint in list(table.constraints):
+        if isinstance(constraint, ForeignKeyConstraint):
+            table.constraints.remove(constraint)
+    if damage == "missing_one":
+        table.append_constraint(ForeignKeyConstraint(["repo_id"], ["repositories.id"]))
+    if damage == "wrong_columns":
+        # Both target table names are present, but their local columns are swapped.
+        table.append_constraint(ForeignKeyConstraint(["user_id"], ["repositories.id"]))
+        table.append_constraint(ForeignKeyConstraint(["repo_id"], ["users.id"]))
+
+    url = f"sqlite+pysqlite:///{tmp_path / 'invalid_fks.db'}"
+    engine = create_engine(url)
+    try:
+        metadata.create_all(engine)
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO users (id, name, role, is_active) VALUES (:id, 'kept', 'developer', 1)"
+                ),
+                {"id": "0" * 32},
+            )
+        with pytest.raises(RuntimeError, match="外键约束"):
+            run_migrations(url)
+        assert "alembic_version" not in inspect(engine).get_table_names()
+        with engine.connect() as connection:
+            assert connection.execute(text("SELECT name FROM users")).scalar_one() == "kept"
+    finally:
+        engine.dispose()

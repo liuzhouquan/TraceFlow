@@ -13,6 +13,33 @@ from app.db.models import Base
 logger = logging.getLogger(__name__)
 
 
+def _missing_foreign_keys(inspector, table_names: set[str], excluded_columns=None) -> list[str]:
+    """Compare FK endpoints, independent of generated constraint names."""
+    excluded_columns = excluded_columns or {}
+    missing = []
+    for table_name in sorted(table_names):
+        actual = {
+            (
+                tuple(fk["constrained_columns"]),
+                fk["referred_table"],
+                tuple(fk["referred_columns"]),
+            )
+            for fk in inspector.get_foreign_keys(table_name)
+        }
+        for constraint in Base.metadata.tables[table_name].foreign_key_constraints:
+            columns = tuple(element.parent.name for element in constraint.elements)
+            if set(columns) & excluded_columns.get(table_name, set()):
+                continue
+            target_table = constraint.referred_table.name
+            target_columns = tuple(element.column.name for element in constraint.elements)
+            if (columns, target_table, target_columns) not in actual:
+                missing.append(
+                    f"{table_name}({', '.join(columns)}) -> "
+                    f"{target_table}({', '.join(target_columns)})"
+                )
+    return sorted(missing)
+
+
 def _inspect_and_adopt_legacy_database(inspector, alembic_cfg: Config) -> None:
     raw_tables = set(inspector.get_table_names())
     user_tables = raw_tables - {"sqlite_sequence", "alembic_version"}
@@ -43,17 +70,8 @@ def _inspect_and_adopt_legacy_database(inspector, alembic_cfg: Config) -> None:
             if missing:
                 missing_0002_columns[t] = missing
 
-    # 检查 repository_members 外键约束完整性
-    has_0002_fks = True
-    if "repository_members" in user_tables:
-        raw_fks = inspector.get_foreign_keys("repository_members")
-        if raw_fks:
-            referred_tables = {
-                fk.get("referred_table") for fk in raw_fks if fk.get("referred_table")
-            }
-            has_0002_fks = {"repositories", "users"}.issubset(referred_tables)
-
-    is_full_0002 = not missing_0002_tables and not missing_0002_columns and has_0002_fks
+    missing_0002_fks = _missing_foreign_keys(inspector, expected_0002_tables & user_tables)
+    is_full_0002 = not missing_0002_tables and not missing_0002_columns and not missing_0002_fks
 
     # 检查 0001 基线完整性
     is_baseline_0001 = False
@@ -82,7 +100,14 @@ def _inspect_and_adopt_legacy_database(inspector, alembic_cfg: Config) -> None:
             if t not in ("users", "repositories")
         )
 
-        is_baseline_0001 = users_0001_ok and repos_0001_ok and other_tables_ok
+        missing_0001_fks = _missing_foreign_keys(
+            inspector,
+            expected_0001_tables,
+            excluded_columns={"repositories": repo_cols_0002_additions},
+        )
+        is_baseline_0001 = (
+            users_0001_ok and repos_0001_ok and other_tables_ok and not missing_0001_fks
+        )
 
     if is_full_0002:
         logger.info("检测到结构完整且已包含认证隔离的存量数据库，自动标记版本为 head...")
@@ -97,8 +122,8 @@ def _inspect_and_adopt_legacy_database(inspector, alembic_cfg: Config) -> None:
         if missing_0002_columns:
             for t, cols in sorted(missing_0002_columns.items()):
                 reasons.append(f"{t} 列缺失: {sorted(cols)}")
-        if not has_0002_fks and "repository_members" in user_tables:
-            reasons.append("repository_members 外键约束缺失")
+        if missing_0002_fks:
+            reasons.append(f"外键约束缺失或不匹配: {missing_0002_fks}")
         if "users" in user_tables:
             u_cols = existing_columns.get("users", set())
             overlap = u_cols & user_cols_0002_additions

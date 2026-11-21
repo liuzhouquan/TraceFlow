@@ -62,7 +62,7 @@ npm run dev
 pip install ruff==0.17.0
 ruff format --config backend/pyproject.toml --check backend/app scripts
 cd backend
-DATABASE_URL=sqlite+pysqlite:///:memory: AUTO_SYNC_ENABLED=false MILVUS_ENABLED=false pytest
+DATABASE_URL=sqlite+pysqlite:///:memory: AUTO_SYNC_ENABLED=false MILVUS_ENABLED=false python -m pytest
 cd ../frontend
 npm run format:check
 npm run lint
@@ -74,4 +74,4 @@ npm run build
 
 独立实验的数据结构和应用评估接口不同，不能直接混用。当前仓库未包含 `docs/datas/evals/rag_cases.json` 主评估用例文件，因此不将历史评估输出当作当前验证结果。当前审查与验证范围见 [review](docs/review.md)。
 
-当前版本已实现完整的身份认证（用户注册/登录、密码加盐哈希、JWT 令牌与 `/api/auth/me` 探针）、基于 RBAC 的多用户仓库数据隔离与权限审查（支持创建者 ownership、协作者成员控制及敏感操作审计），并引入了标准版本化 Alembic 数据库迁移与回滚流程（`backend/migrations/`）。独立实验的数据结构和应用评估接口不同，不能直接混用。当前审查与验证范围见 [review](docs/review.md)。
+当前版本提供注册/登录、密码哈希、JWT 身份校验、仓库创建者与协作者权限控制，以及 Alembic 迁移和回滚。旧数据库只有在所需表、字段和外键均通过检查后才会纳管；无法识别的结构会拒绝自动升级。验证范围与当前限制见 [review](docs/review.md)。

@@ -26,7 +26,7 @@ jobs:
           cache-dependency-path: backend/requirements.txt
       - run: pip install -r backend/requirements.txt ruff==0.17.0
       - run: ruff format --config backend/pyproject.toml --check backend/app scripts
-      - run: pytest -q
+      - run: python -m pytest -q
         working-directory: backend
   frontend:
     runs-on: ubuntu-latest

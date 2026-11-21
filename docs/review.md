@@ -20,13 +20,14 @@
 
 ## Validation
 
-- Backend: 222 tests passed with SQLite and external services disabled (including 9 new dedicated tests for authentication, RBAC data isolation, collaborator lifecycle, and Alembic migrations).
-- Ruff: all 143 Python files checked as formatted.
-- Frontend: Prettier check, ESLint (0 errors), and TypeScript check passed.
-- Git URL-scoped credential selection was checked using Git's own `config --get-urlmatch` command.
-- Workflow YAML parses successfully. No live LLM, GitHub repository mutation, Docker database or Milvus end-to-end run is included in these offline checks.
+- Backend: 240 tests passed using SQLite with external services disabled. Migration tests include rejected zero/missing/misdirected foreign keys, no version stamp on rejection, and retained user data after legacy upgrade.
+- The three new failure cases were first run against the previous implementation and failed; they passed after the correction. A fourth case covers one missing member-table foreign key.
+- Ruff source formatting, frontend Prettier, ESLint (0 errors), TypeScript, and production build passed.
+- CI now uses `python -m pytest`; the backend pytest configuration also defines its import path, addressing the previous GitHub collection failure (`No module named app`).
+- Git URL-scoped credential selection and workflow YAML were checked during earlier verification.
+- No live LLM, GitHub application-data write or Milvus end-to-end call was included in offline tests. PostgreSQL live migration was not exercised.
 
-ESLint reports 13 React Hook dependency warnings in the UI. FastAPI reports deprecation warnings for the legacy on_event lifecycle hooks. They did not fail checks.
+ESLint reports 13 existing React Hook dependency warnings. The backend suite reports 57 warnings, including FastAPI lifecycle deprecations. These do not fail the checks.
 
 ## Known limits
 
